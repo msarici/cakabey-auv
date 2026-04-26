@@ -1,0 +1,79 @@
+# ============================================================
+# Çakabey AUV - Konfigürasyon Dosyası
+# TEKNOCAK 2026
+# ============================================================
+
+camera:
+  width: 640
+  height: 480
+  fps: 30
+  source: "test"          # csi / webcam / test
+  device_id: 0
+  max_frame_loss: 30
+
+# HSV ile boru tespiti
+# Bu parametreler ABC ile (abc_hsv.py) optimize edilebilir
+detector:
+  h_min: 10
+  h_max: 25
+  s_min: 100
+  s_max: 255
+  v_min: 80
+  v_max: 255
+  min_area: 500
+  blur_kernel: 5
+  morph_kernel: 5
+
+pid:
+  # Yaw PID - boru merkezleme için aktif kullanımda
+  yaw:
+    kp: 1.0
+    ki: 0.0
+    kd: 0.0
+    output_min: -400
+    output_max: 400
+    integral_limit: 200    # anti-windup üst sınırı
+
+  # Forward PID - şu an FSM sabit hız veriyor, bu blok rezerve
+  # TEKNOCAK sonrası: distance feedback ile aktif edilecek
+  forward:
+    kp: 0.5
+    ki: 0.0
+    kd: 0.0
+    output_min: -300
+    output_max: 300
+    integral_limit: 150
+
+fsm:
+  lost_timeout_frames: 30
+  found_threshold_frames: 3
+  approach_area_min: 2000
+  search_yaw_speed: 150
+  forward_base_speed: 200
+  track_slow_area_multiplier: 1.8
+  track_slow_factor: 0.6
+
+vehicle:
+  connection: "/dev/ttyACM0"
+  baudrate: 115200
+  heartbeat_timeout: 3.0
+
+distance:
+  method: "pinhole"       # pinhole / laser
+  pipe_real_width_cm: 20.0
+  focal_length_px: 500.0
+  laser_baseline_cm: 15.0
+
+safety:
+  battery_warn_voltage: 13.0
+  battery_critical_voltage: 12.0
+  leak_pin: 17
+  leak_active_high: true
+  watchdog_timeout: 2.0
+  max_sensor_loss: 10
+
+log:
+  directory: "logs"
+  csv_enabled: true
+  overlay_enabled: true
+  flush_interval: 30
