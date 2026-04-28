@@ -28,6 +28,8 @@ from safety import SafetyMonitor
 from distance import DistanceEstimator
 from debug_overlay import draw_overlay
 from telemetry_logger import TelemetryLogger
+from ground_station import GroundStation
+from anomaly_detector import AnomalyDetector
 
 
 logging.basicConfig(
@@ -141,6 +143,9 @@ def main():
                         help="Config dosyası")
     parser.add_argument("--no-display", action="store_true",
                         help="Görüntü penceresini kapatır")
+    parser.add_argument("--sim", action="store_true",
+                        help="Donanımsız simülasyon modu: kamera ve Pixhawk yoksa "
+                             "test moduna düşmeye izin verir. Production'da kullanma.")
     args = parser.parse_args()
 
     # config
@@ -151,6 +156,18 @@ def main():
     if selected_source is None:
         selected_source = cfg_get(cfg, "camera", "source", default="test")
 
+    # --sim: donanımsız laptop testi için fail-open override
+    if args.sim:
+        log.warning("=" * 45)
+        log.warning("SIM MODE ENABLED — donanim olmadan calisiyor")
+        log.warning("Production icin --sim KULLANMA. Bu mod test/gelistirme icin.")
+        log.warning("=" * 45)
+        sim_camera_fallback = True
+        sim_vehicle_fallback = True
+    else:
+        sim_camera_fallback = cfg_get(cfg, "camera", "allow_test_fallback", default=False)
+        sim_vehicle_fallback = cfg_get(cfg, "vehicle", "allow_sim_fallback", default=False)
+
     # modüller
     camera = Camera(
         source=selected_source,
@@ -158,7 +175,7 @@ def main():
         height=cfg_get(cfg, "camera", "height", default=480),
         fps=cfg_get(cfg, "camera", "fps", default=30),
         device_id=cfg_get(cfg, "camera", "device_id", default=0),
-        allow_test_fallback=cfg_get(cfg, "camera", "allow_test_fallback", default=False),
+        allow_test_fallback=sim_camera_fallback,
     )
 
     detector = PipeDetector(
@@ -202,7 +219,7 @@ def main():
         pwm_base=cfg_get(cfg, "vehicle", "pwm_base", default=1500),
         pwm_min=cfg_get(cfg, "vehicle", "pwm_min", default=1100),
         pwm_max=cfg_get(cfg, "vehicle", "pwm_max", default=1900),
-        allow_sim_fallback=cfg_get(cfg, "vehicle", "allow_sim_fallback", default=False),
+        allow_sim_fallback=sim_vehicle_fallback,
     )
 
     safety = SafetyMonitor(
@@ -225,6 +242,22 @@ def main():
         directory=cfg_get(cfg, "log", "directory", default="logs"),
         enabled=cfg_get(cfg, "log", "csv_enabled", default=True),
         flush_interval=cfg_get(cfg, "log", "flush_interval", default=30),
+    )
+
+    ground = GroundStation(
+        host=cfg_get(cfg, "ground_station", "host", default="192.168.2.1"),
+        port=cfg_get(cfg, "ground_station", "port", default=14651),
+        enabled=cfg_get(cfg, "ground_station", "enabled", default=True),
+        send_interval_s=cfg_get(cfg, "ground_station", "send_interval_s", default=0.1),
+    )
+
+    anomaly_enabled = cfg_get(cfg, "anomaly", "enabled", default=True)
+    anomaly_detector = AnomalyDetector(
+        algae_ratio_thresh=cfg_get(cfg, "anomaly", "algae_ratio_thresh", default=0.05),
+        rust_ratio_thresh=cfg_get(cfg, "anomaly", "rust_ratio_thresh", default=0.03),
+        crack_min_lines=cfg_get(cfg, "anomaly", "crack_min_lines", default=1),
+        break_min_contour_area=cfg_get(cfg, "anomaly", "break_min_contour_area", default=200),
+        missing_aspect_min=cfg_get(cfg, "anomaly", "missing_aspect_min", default=3.0),
     )
 
     # başlangıç ayarları
@@ -309,6 +342,15 @@ def main():
                 log.error(f"Tespit hatası: {e}")
                 detection = default_detection(frame)
 
+            # ---------------- ANOMALY ----------------
+            anomalies = []
+            if anomaly_enabled:
+                try:
+                    anomalies = anomaly_detector.detect(frame, detection)
+                except Exception as e:
+                    log.error(f"Anomaly tespit hatası: {e}")
+                    anomalies = []
+
             # ---------------- FSM ----------------
             try:
                 action = fsm.update(detection)
@@ -388,8 +430,41 @@ def main():
                 yaw_cmd=yaw_cmd,
                 fwd_cmd=fwd_cmd,
                 fps=fps,
-                distance_cm=distance_cm
+                distance_cm=distance_cm,
+                anomalies=anomalies,
             )
+
+            # ---------------- GROUND TELEMETRY (CAT6 / UDP) ----------------
+            # mask gibi NumPy verisi JSON'lanmaz; ham scalar/listeleri gonder.
+            ground.send({
+                "state": action.get("state", "LOST"),
+                "detection": {
+                    "found": bool(detection.get("found", False)),
+                    "cx": int(detection.get("cx", 0)),
+                    "cy": int(detection.get("cy", 0)),
+                    "area": int(detection.get("area", 0)),
+                    "error_x": int(detection.get("error_x", 0)),
+                    "error_y": int(detection.get("error_y", 0)),
+                    "width": int(detection.get("width", 0)),
+                    "height": int(detection.get("height", 0)),
+                },
+                "sensor": {
+                    "voltage": float(sensor.get("voltage", 0.0)) if sensor else 0.0,
+                    "heading": int(sensor.get("heading", 0)) if sensor else 0,
+                },
+                "control": {"yaw_cmd": int(yaw_cmd), "fwd_cmd": int(fwd_cmd)},
+                "fps": float(fps),
+                "distance_cm": None if distance_cm is None else float(distance_cm),
+                "anomalies": [
+                    {
+                        "type": str(a["type"]),
+                        "bbox": [int(v) for v in a["bbox"]],
+                        "confidence": round(float(a["confidence"]), 3),
+                        "area_ratio": round(float(a["area_ratio"]), 3),
+                    }
+                    for a in anomalies
+                ],
+            })
 
             # ---------------- GÖRÜNTÜ ----------------
             if not args.no_display and overlay_enabled:
@@ -403,6 +478,7 @@ def main():
                         distance_cm=distance_cm,
                         yaw_cmd=yaw_cmd,
                         fwd_cmd=fwd_cmd,
+                        anomalies=anomalies,
                     )
                 except Exception as e:
                     log.error(f"Overlay çizim hatası: {e}")
@@ -449,6 +525,10 @@ def main():
             log.error(f"Kamera kapanışında hata: {e}")
 
         telemetry.close()
+        try:
+            ground.close()
+        except Exception as e:
+            log.error(f"Ground station kapanis hatasi: {e}")
         cv2.destroyAllWindows()
         log.info("Çakabey AUV kapatıldı.")
 

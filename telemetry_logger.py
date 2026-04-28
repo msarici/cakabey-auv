@@ -50,14 +50,22 @@ class TelemetryLogger:
             "voltage",
             "fps",
             "distance_cm",
+            "anomalies",
         ])
         # header'ı hemen flush et ki dosya boş kalmasın
         self.file.flush()
         self._rows_since_flush = 0
 
-    def log(self, action, detection, sensor, yaw_cmd, fwd_cmd, fps, distance_cm=None):
+    def log(self, action, detection, sensor, yaw_cmd, fwd_cmd, fps, distance_cm=None,
+            anomalies=None):
         if not self.enabled or self.writer is None:
             return
+
+        anomalies = anomalies or []
+        # CSV'de "type1:conf;type2:conf" formatında kaydet (post-mortem analiz için)
+        anomaly_str = ";".join(
+            f"{a.get('type', '?')}:{a.get('confidence', 0):.2f}" for a in anomalies
+        )
 
         self.writer.writerow([
             time.time(),
@@ -71,6 +79,7 @@ class TelemetryLogger:
             0 if sensor is None else sensor.get("voltage", 0),
             round(fps, 2),
             "" if distance_cm is None else round(distance_cm, 2),
+            anomaly_str,
         ])
 
         self._rows_since_flush += 1

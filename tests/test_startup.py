@@ -59,3 +59,18 @@ def test_startup_succeeds_with_real_connection():
 def test_startup_fails_with_critical_battery():
     veh = _FakeVehicle(connect_ok=True, allow_sim_fallback=False, voltage=11.5)
     assert main_module.startup(veh) is False
+
+
+def test_sim_flag_enables_fallback_via_real_vehicle_class():
+    """
+    --sim flag'i runtime'da Vehicle.allow_sim_fallback=True yapar.
+    Gerçek Vehicle sınıfı + sahte connect (Pixhawk yok) ile startup geçmeli.
+    """
+    from vehicle import Vehicle
+    veh = Vehicle(allow_sim_fallback=True)
+    # connect() pymavlink yoksa veya bağlantı kurulamazsa False döner.
+    # Test ortamında Pixhawk olmadığı için connect() False bekleniyor.
+    # startup(veh) bu durumda allow_sim_fallback=True olduğu için True dönmeli.
+    assert main_module.startup(veh) is True
+    # Sim modunda kalınmış olmalı (connect başarısızdı ama fallback açıktı)
+    assert veh.sim_mode is True

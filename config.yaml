@@ -86,3 +86,19 @@ log:
   csv_enabled: true
   overlay_enabled: true
   flush_interval: 30
+
+# Kara istasyonu UDP telemetrisi (CAT6 tether)
+ground_station:
+  enabled: true
+  host: "192.168.2.1"      # kara istasyonu IP (ROV tether default)
+  port: 14651
+  send_interval_s: 0.1     # 10 Hz (main loop FPS'inden bagimsiz)
+
+# Anomaly detection (yosun, pas, catlak, kopma, eksik parca)
+anomaly:
+  enabled: true
+  algae_ratio_thresh: 0.05    # ROI'de yesil piksel orani esigi
+  rust_ratio_thresh: 0.03     # ROI'de pas piksel orani esigi
+  crack_min_lines: 1          # HoughLinesP minimum cizgi sayisi
+  break_min_contour_area: 200 # kopma icin contour minimum alan
+  missing_aspect_min: 3.0     # boru en/boy oranı bunun altıysa "eksik"
