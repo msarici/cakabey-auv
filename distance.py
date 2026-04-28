@@ -18,6 +18,13 @@ class DistanceEstimator:
         focal_length_px=500.0,
         laser_baseline_cm=15.0,
     ):
+        if focal_length_px <= 0:
+            raise ValueError(f"focal_length_px > 0 olmalı, alındı: {focal_length_px}")
+        if pipe_real_width_cm <= 0:
+            raise ValueError(f"pipe_real_width_cm > 0 olmalı, alındı: {pipe_real_width_cm}")
+        if laser_baseline_cm <= 0:
+            raise ValueError(f"laser_baseline_cm > 0 olmalı, alındı: {laser_baseline_cm}")
+
         self.method = method
         self.pipe_real_width_cm = pipe_real_width_cm
         self.focal_length_px = focal_length_px

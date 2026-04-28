@@ -28,8 +28,13 @@ class TelemetryLogger:
             return
 
         os.makedirs(self.directory, exist_ok=True)
-        filename = time.strftime("telemetry_%Y%m%d_%H%M%S.csv")
-        path = os.path.join(self.directory, filename)
+        # Aynı saniyede başlayan iki run birbirini ezmesin: çakışma varsa suffix ekle
+        base = time.strftime("telemetry_%Y%m%d_%H%M%S")
+        path = os.path.join(self.directory, base + ".csv")
+        suffix = 1
+        while os.path.exists(path):
+            path = os.path.join(self.directory, f"{base}_{suffix}.csv")
+            suffix += 1
 
         self.file = open(path, "w", newline="", encoding="utf-8")
         self.writer = csv.writer(self.file)

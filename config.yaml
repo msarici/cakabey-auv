@@ -10,6 +10,7 @@ camera:
   source: "test"          # csi / webcam / test
   device_id: 0
   max_frame_loss: 30
+  allow_test_fallback: false   # gerçek kamera açılmazsa test moduna düşmesin (production)
 
 # HSV ile boru tespiti
 # Bu parametreler ABC ile (abc_hsv.py) optimize edilebilir
@@ -57,6 +58,14 @@ vehicle:
   connection: "/dev/ttyACM0"
   baudrate: 115200
   heartbeat_timeout: 3.0
+  flight_mode: "MANUAL"     # ArduSub: MANUAL / STABILIZE / ALT_HOLD (firmware'e göre)
+  allow_sim_fallback: false # Pixhawk yoksa sim moduna düşmesin (production = false)
+  # RC kanal mapping — ArduSub RCMAP_* parametrelerine uy:
+  yaw_channel: 4            # RCMAP_YAW (default 4)
+  forward_channel: 5        # RCMAP_FORWARD (default 5)
+  pwm_base: 1500
+  pwm_min: 1100
+  pwm_max: 1900
 
 distance:
   method: "pinhole"       # pinhole / laser

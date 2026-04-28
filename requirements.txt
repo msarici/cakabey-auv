@@ -1,0 +1,19 @@
+# Çakabey AUV — TEKNOCAK 2026
+# Python 3.10+
+
+# Görüntü işleme
+opencv-python>=4.8.0
+numpy>=1.24.0
+
+# Konfigürasyon
+PyYAML>=6.0
+
+# Pixhawk / MAVLink (gerçek araç bağlantısı için)
+pymavlink>=2.4.40
+
+# Test (opsiyonel)
+pytest>=7.4.0
+
+# NOT: Jetson.GPIO sadece Jetson donanımında gerekli, pip ile değil
+# sistem paketinden gelir (sudo apt install python3-jetson-gpio).
+# Geliştirme makinelerinde import hatası sızıntı sensörünü pasif eder.

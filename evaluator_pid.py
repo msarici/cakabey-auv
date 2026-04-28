@@ -3,15 +3,27 @@ evaluator_pid.py — PID Tuning için Step Response Evaluator
 Çakabey AUV | TEKNOCAK 2026
 
 ROV yaw dinamiğini birinci derece (first-order) modelle:
-    τ * dy/dt + y = K * u
+    tau * dy/dt + y = K * u
 
 Performans metriği: ITAE (Integral of Time-weighted Absolute Error)
-    ITAE = ∫ t * |e(t)| dt
+    ITAE = integral( t * |e(t)| ) dt
 
-Anti-windup: integral terimi output saturation oluştuğunda dondurulur.
-Bu olmadan ABC tuning Ki'yi yapay olarak yüksek seçer (windup overshoot
-göstermediği için cezalandırılmaz). Anti-windup gerçek pid_controller.py
-ile tutarlıdır.
+Anti-windup yaklaşımı (pid_controller.py ile birebir aynı):
+    1. integral'i her zaman error*dt ile güncelle
+    2. Ki > 0 ise integral'i max_integral ile clamp et
+       (max_integral = integral_limit varsa onu, yoksa output_max / Ki)
+    3. output = kp*error + ki*integral + kd*derivative
+    4. output'u output_min/output_max ile clamp et
+Bu yaklaşım "back-calculation" değil; integral state-clamping. Gerçek
+PIDController ile aynı davranır, ABC tuning doğrudan controller'a transfer olur.
+
+Birim tutarlılığı:
+    step = 100 piksel (yaw hatası)
+    u    = +/-400 PWM offset (gerçek motor sınırı, vehicle.py PWM clip ile uyumlu)
+    K    = 0.25  ->  steady-state y_max = K * u_max = 0.25 * 400 = 100 piksel = step
+Bu kalibrasyon çıkışı step ile aynı seviyede tutar; doyma fizik dışı
+overshoot üretmez. K, gerçek araç tepkisine kalibre edildiğinde ABC tuning
+doğrudan gerçek davranışa transfer olur.
 """
 
 import numpy as np
@@ -20,13 +32,14 @@ import numpy as np
 class PIDEvaluator:
     def __init__(
         self,
-        system_gain=1.0,
+        system_gain=0.25,
         time_constant=0.5,
         sim_duration=5.0,
         sim_dt=0.02,
         step_input=100.0,
         output_min=-400,
         output_max=400,
+        integral_limit=None,
     ):
         self.K = system_gain
         self.tau = time_constant
@@ -35,12 +48,28 @@ class PIDEvaluator:
         self.step = step_input
         self.output_min = output_min
         self.output_max = output_max
+        self.integral_limit = integral_limit
 
         self.steps = int(sim_duration / sim_dt)
 
+    def _clamp_integral(self, integral, ki):
+        """PIDController._clamp_integral mantığının birebir kopyası."""
+        if ki <= 0:
+            return integral
+        if self.integral_limit is not None:
+            max_integral = abs(self.integral_limit)
+        else:
+            max_integral = abs(self.output_max / ki)
+        if integral > max_integral:
+            return max_integral
+        if integral < -max_integral:
+            return -max_integral
+        return integral
+
     def _run_pid_loop(self, kp, ki, kd, collect_series=False):
         """
-        Tek bir simülasyon koşusu. Anti-windup uygulanır.
+        Tek bir simülasyon koşusu. PIDController.compute() ile aynı sıra:
+        integral update -> integral clamp -> output -> output clamp.
         collect_series=True ise t/y/error/u dizilerini de döndürür.
         """
         y = 0.0
@@ -55,30 +84,23 @@ class PIDEvaluator:
         for i in range(self.steps):
             t = i * self.dt
 
-            # Derivative (first-order)
+            # 1) Integral update (her zaman, dt > 0)
+            integral += error * self.dt
+
+            # 2) Anti-windup: integral state clamp (Ki > 0 ise)
+            integral = self._clamp_integral(integral, ki)
+
+            # 3) Derivative (i=0'da derivative kick'i engelle)
             derivative = (error - prev_error) / self.dt if i > 0 else 0.0
 
-            # Tentative integral update
-            new_integral = integral + error * self.dt
-
-            # Tentative u with new integral
-            u_tentative = kp * error + ki * new_integral + kd * derivative
-
-            # Anti-windup: eğer u saturate olacaksa integral'i dondur
-            if u_tentative > self.output_max:
+            # 4) Output ve output clamp
+            u = kp * error + ki * integral + kd * derivative
+            if u > self.output_max:
                 u = self.output_max
-                # Integral sadece error sistemi saturation'dan çıkaracaksa güncellensin
-                if error < 0:
-                    integral = new_integral
-            elif u_tentative < self.output_min:
+            elif u < self.output_min:
                 u = self.output_min
-                if error > 0:
-                    integral = new_integral
-            else:
-                u = u_tentative
-                integral = new_integral
 
-            # First-order plant: y[k+1] = y[k] + dt/τ * (K*u - y[k])
+            # 5) First-order plant: y[k+1] = y[k] + dt/tau * (K*u - y[k])
             y = y + (self.dt / self.tau) * (self.K * u - y)
 
             prev_error = error
@@ -107,6 +129,16 @@ class PIDEvaluator:
         )
         return 1.0 / (1.0 + itae)
 
+    def evaluate_with_itae(self, pid_params):
+        """Hem skoru hem ham ITAE'yi döndürür (raporlama için)."""
+        itae = self._run_pid_loop(
+            pid_params["kp"],
+            pid_params["ki"],
+            pid_params["kd"],
+            collect_series=False,
+        )
+        return 1.0 / (1.0 + itae), itae
+
     def simulate(self, pid_params):
         """Görselleştirme için: t/y/error/u serileri döndürür."""
         _, ts, ys, errors, us = self._run_pid_loop(
@@ -131,10 +163,9 @@ if __name__ == "__main__":
         {"kp": 5.0, "ki": 0.0, "kd": 0.0},
         {"kp": 2.0, "ki": 0.1, "kd": 0.05},
         {"kp": 3.0, "ki": 0.0, "kd": 0.1},
-        {"kp": 4.36, "ki": 5.0, "kd": 0.38},   # önceki ABC çıktısı, anti-windup'lı haliyle
     ]
 
-    print("\nFarklı PID setlerinin karşılaştırması (anti-windup ON):")
+    print("\nFarkli PID setlerinin karsilastirmasi (anti-windup ON):")
     for params in test_cases:
         score = evaluator.evaluate(params)
-        print(f"  Kp={params['kp']:.2f} Ki={params['ki']:.2f} Kd={params['kd']:.2f} → fitness = {score:.4f}")
+        print(f"  Kp={params['kp']:.2f} Ki={params['ki']:.2f} Kd={params['kd']:.2f} -> fitness = {score:.4f}")

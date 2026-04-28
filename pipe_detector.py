@@ -4,6 +4,13 @@ pipe_detector.py — Boru Tespit Modülü
 
 HSV maskeleme ile turuncu boruyu bulmaya çalışır.
 En büyük uygun contour seçilir.
+
+LIMITASYON — H wraparound:
+OpenCV'de H kanalı 0-179 dairesel. cv2.inRange tek aralık ile çalışır,
+yani örnek olarak kırmızı (H ≈ 0 ve H ≈ 179'a yakın) için iki ayrı
+maske alıp bitwise_or yapmak gerekir. Turuncu (H ≈ 5-25) wraparound
+bölgesinde değil, mevcut tek-aralık yaklaşımı yeterli. Hedef renk
+değişirse bu sınırlama gözden geçirilmeli.
 """
 
 import cv2

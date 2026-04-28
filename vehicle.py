@@ -21,10 +21,42 @@ except ImportError:
 
 
 class Vehicle:
-    def __init__(self, connection="/dev/ttyACM0", baudrate=115200, heartbeat_timeout=3.0):
+    def __init__(self, connection="/dev/ttyACM0", baudrate=115200, heartbeat_timeout=3.0,
+                 flight_mode="MANUAL", yaw_channel=4, forward_channel=5,
+                 pwm_base=1500, pwm_min=1100, pwm_max=1900,
+                 allow_sim_fallback=False):
+        """
+        flight_mode: ArduSub için tipik seçenekler MANUAL / STABILIZE / ALT_HOLD.
+        yaw_channel/forward_channel: ArduSub RCMAP_YAW / RCMAP_FORWARD parametreleri ile
+            uyumlu olmalı. Mission Planner / QGC'de doğrula. Default: yaw=4, forward=5.
+        pwm_base/min/max: motor PWM aralığı (1100-1900 us, neutral 1500).
+        allow_sim_fallback: Pixhawk bağlantısı kurulamazsa sim moduna geçmesine izin
+            verir. Production'da False (görev güvenliği). Geliştirme'de True.
+        """
+        yaw_channel = int(yaw_channel)
+        forward_channel = int(forward_channel)
+        if not (1 <= yaw_channel <= 8):
+            raise ValueError(f"yaw_channel 1..8 aralığında olmalı, alındı: {yaw_channel}")
+        if not (1 <= forward_channel <= 8):
+            raise ValueError(f"forward_channel 1..8 aralığında olmalı, alındı: {forward_channel}")
+        if yaw_channel == forward_channel:
+            raise ValueError(f"yaw_channel ve forward_channel aynı olamaz: {yaw_channel}")
+        if not (pwm_min < pwm_base < pwm_max):
+            raise ValueError(
+                f"pwm_min < pwm_base < pwm_max olmalı, alındı: "
+                f"min={pwm_min} base={pwm_base} max={pwm_max}"
+            )
+
         self.connection = connection
         self.baudrate = baudrate
         self.heartbeat_timeout = heartbeat_timeout
+        self.flight_mode = flight_mode
+        self.yaw_channel = yaw_channel
+        self.forward_channel = forward_channel
+        self.pwm_base = pwm_base
+        self.pwm_min = pwm_min
+        self.pwm_max = pwm_max
+        self.allow_sim_fallback = allow_sim_fallback
 
         self.master = None
         self.sim_mode = True
@@ -144,19 +176,18 @@ class Vehicle:
             return True
 
         try:
-            base = 1500
-            yaw_pwm = self._limit_pwm(base + int(yaw))
-            forward_pwm = self._limit_pwm(base + int(forward))
+            yaw_pwm = self._limit_pwm(self.pwm_base + int(yaw))
+            forward_pwm = self._limit_pwm(self.pwm_base + int(forward))
 
-            # Kanal map ArduSub default'a göre: ch4=yaw, ch5=forward
-            # RCMAP_* parametrelerini Mission Planner / QGC ile doğrula
+            # 8 kanal slot'u (RC_CHANNELS_OVERRIDE), 65535 = "değiştirme"
+            channels = [65535] * 8
+            channels[self.yaw_channel - 1] = yaw_pwm
+            channels[self.forward_channel - 1] = forward_pwm
+
             self.master.mav.rc_channels_override_send(
                 self.master.target_system,
                 self.master.target_component,
-                65535, 65535, 65535,
-                yaw_pwm,
-                forward_pwm,
-                65535, 65535, 65535,
+                *channels,
             )
             return True
         except Exception as e:
@@ -170,6 +201,5 @@ class Vehicle:
         self.master = None
         return True
 
-    @staticmethod
-    def _limit_pwm(value, low=1100, high=1900):
-        return max(low, min(high, value))
+    def _limit_pwm(self, value):
+        return max(self.pwm_min, min(self.pwm_max, value))

@@ -11,10 +11,13 @@ class PIDTuner:
         self.evaluator = evaluator
 
     def optimize(self, iterations=30):
+        # Bounds K=0.25'lik plant'a göre kalibre edildi.
+        # Loop gain K*Kp ≈ 5 hedefi için Kp 0-20.
+        # Ki ve Kd geniş aralıkta serbest bırakıldı; ABC anti-windup ile cezalandırır.
         bounds = [
-            (0.0, 5.0),   # kp
-            (0.0, 1.0),   # ki
-            (0.0, 1.0),   # kd
+            (0.0, 20.0),  # kp
+            (0.0, 5.0),   # ki
+            (0.0, 5.0),   # kd
         ]
 
         def fitness(solution):

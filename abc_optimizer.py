@@ -84,9 +84,10 @@ class ABCOptimizer:
                 else:
                     self.trial_counts[i] += 1
 
-            # scout bees
+            # scout bees - elite preservation: global-best food source'u koru
+            current_best_idx = max(range(self.colony_size), key=lambda i: self.scores[i]) if self.maximize else min(range(self.colony_size), key=lambda i: self.scores[i])
             for i in range(self.colony_size):
-                if self.trial_counts[i] >= self.limit:
+                if self.trial_counts[i] >= self.limit and i != current_best_idx:
                     self.food_sources[i] = self._random_solution()
                     self.scores[i] = self.fitness_fn(self.food_sources[i])
                     self.trial_counts[i] = 0

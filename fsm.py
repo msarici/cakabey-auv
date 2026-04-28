@@ -13,7 +13,7 @@ class FSM:
     LOST = "LOST"
 
     def __init__(
-      self,
+        self,
         lost_timeout=30,
         found_threshold=3,
         approach_area_min=2000,
@@ -57,12 +57,14 @@ class FSM:
         elif self.state == self.APPROACH:
             if not found and self.lost_count >= self.lost_timeout:
                 self.state = self.LOST
+                self.lost_count = 0
             elif found and area >= self.approach_area_min:
                 self.state = self.TRACK
 
         elif self.state == self.TRACK:
             if not found and self.lost_count >= self.lost_timeout:
                 self.state = self.LOST
+                self.lost_count = 0
 
         elif self.state == self.LOST:
             if self.found_count >= self.found_threshold:

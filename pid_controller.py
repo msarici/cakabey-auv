@@ -29,7 +29,8 @@ class PIDController:
         self.prev_time = None
 
     def compute(self, error):
-        now = time.time()
+        # time.monotonic() — sistem saati değişimine immün; dt asla negatif olmaz.
+        now = time.monotonic()
 
         if self.prev_time is None:
             dt = 0.0
@@ -45,12 +46,13 @@ class PIDController:
         if dt > 0:
             self.integral += error * dt
 
-        # anti-windup
+        # anti-windup (sadece Ki > 0 ise integral terimi anlamlı)
         if self.ki > 0:
             if self.integral_limit is not None:
                 max_integral = abs(self.integral_limit)
             else:
-                max_integral = abs(self.output_max / max(self.ki, 0.001))
+                # output_max / Ki — Ki=0 case'i dış if ile zaten elendi
+                max_integral = abs(self.output_max / self.ki)
 
             if self.integral > max_integral:
                 self.integral = max_integral

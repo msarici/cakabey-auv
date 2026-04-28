@@ -13,12 +13,17 @@ import numpy as np
 
 
 class Camera:
-    def __init__(self, source="test", width=640, height=480, fps=30, device_id=0):
+    def __init__(self, source="test", width=640, height=480, fps=30, device_id=0, allow_test_fallback=False):
+        """
+        allow_test_fallback: gerçek kamera açılmazsa test moduna düşmesine izin
+        verir. Production (görev) için False olmalı; geliştirme/test için True.
+        """
         self.source = source
         self.width = width
         self.height = height
         self.fps = fps
         self.device_id = device_id
+        self.allow_test_fallback = allow_test_fallback
 
         self.cap = None
         self.frame_count = 0
@@ -42,22 +47,35 @@ class Camera:
             return True
 
         else:
-            print(f"[kamera] Geçersiz kaynak: {self.source}. Test moduna geçiliyor.")
-            self.source = "test"
+            print(f"[kamera] Geçersiz kaynak: {self.source}.")
             self.cap = None
-            return True
+            return False
 
         if self.cap is None or not self.cap.isOpened():
-            print(f"[kamera] {self.source} açılamadı. Test moduna geçiliyor.")
-            self.source = "test"
+            if self.allow_test_fallback:
+                print(f"[kamera] {self.source} açılamadı. Test moduna geçiliyor (fallback aktif).")
+                self.source = "test"
+                self.cap = None
+                return True
+            print(f"[kamera] {self.source} açılamadı. Fallback kapalı, hata raporlanıyor.")
             self.cap = None
-            return True
+            return False
 
         print(f"[kamera] {self.source} açıldı. ({self.width}x{self.height})")
         return True
 
     def read(self):
         if self.source == "test":
+            # CPU %100'ü engellemek için target FPS'e göre rate limit
+            if self.fps > 0:
+                target_dt = 1.0 / self.fps
+                now = time.time()
+                last = getattr(self, "_last_test_read", None)
+                if last is not None:
+                    elapsed = now - last
+                    if elapsed < target_dt:
+                        time.sleep(target_dt - elapsed)
+                self._last_test_read = time.time()
             frame = self._generate_test_frame()
             self._update_fps()
             return frame

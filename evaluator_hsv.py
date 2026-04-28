@@ -16,7 +16,6 @@ Bu zorlaştırmalar gerçek su altı koşullarını tam temsil etmez ancak
 algoritmanın gürültü ve benzer renkler altında robust olduğunu kanıtlar.
 """
 
-import time
 import numpy as np
 import cv2
 
@@ -38,9 +37,13 @@ class HSVEvaluator:
         self._prepare_dataset()
 
     def _prepare_dataset(self):
-        """20 zorlaştırılmış sentetik frame ve ground truth mask üret."""
+        """20 zorlaştırılmış sentetik frame ve ground truth mask üret.
+
+        Deterministik t: time.time() KULLANILMAZ — yoksa her ABC koşusunda
+        boru pozisyonu farklı olur ve sonuçlar kıyaslanamaz.
+        """
         for i in range(self.num_frames):
-            t = time.time() + i * 0.3
+            t = i * 0.3
             frame, gt_mask = self._make_frame_and_gt(t, frame_idx=i)
             self.frames.append(frame)
             self.gt_masks.append(gt_mask)
@@ -149,4 +152,4 @@ if __name__ == "__main__":
     }
 
     score = evaluator.evaluate(default_params)
-    print(f"Zorlaştırılmış dataset, default HSV ile IoU: {score:.4f}")
+    print(f"Zorlastirilmis dataset, default HSV ile IoU: {score:.4f}")

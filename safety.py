@@ -64,15 +64,14 @@ class SafetyMonitor:
             print(f"[safety] Sızıntı sensörü başlatılamadı: {e}")
 
     def check(self, sensor_data):
+        """
+        sensor_data: dict (None değil — main.py None ise check çağırmaz).
+        """
         status = {
             "emergency": False,
             "reason": "",
             "warnings": [],
         }
-
-        if sensor_data is None:
-            status["warnings"].append("Sensör verisi yok")
-            return status
 
         voltage = sensor_data.get("voltage", 0.0)
         timestamp = sensor_data.get("timestamp", time.time())
@@ -87,9 +86,11 @@ class SafetyMonitor:
         if voltage > 0 and voltage <= self.warn_voltage:
             status["warnings"].append(f"Batarya düşük: {voltage:.1f}V")
 
-        # Watchdog - sensör donmuş mu
+        # Watchdog - sensör donmuşsa emergency (kontrolden çıkmış araç riski)
         if time.time() - timestamp > self.watchdog_timeout:
-            status["warnings"].append("Sensör zaman aşımı")
+            status["emergency"] = True
+            status["reason"] = "Sensör zaman aşımı"
+            return status
 
         # Sızıntı
         if self._check_leak():

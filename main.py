@@ -72,17 +72,21 @@ def cfg_get(cfg, *keys, default=None):
 def startup(vehicle):
     """
     Araç başlatma sırası.
-    Gerçek bağlantı varsa sensör, mod ve arm kontrol edilir.
+    Pixhawk bağlantısı yoksa: vehicle.allow_sim_fallback True ise sim modda
+    devam eder; False ise startup başarısız olur ve main güvenli çıkış yapar.
     """
     log.info("=" * 45)
-    log.info("ÇAKABEY AUV - BASLATMA")
+    log.info("CAKABEY AUV - BASLATMA")
     log.info("=" * 45)
 
     connected = vehicle.connect()
 
     if not connected:
-        log.warning("Pixhawk bulunamadı. Test / simülasyon modunda devam ediliyor.")
-        return True
+        if vehicle.allow_sim_fallback:
+            log.warning("Pixhawk bulunamadi. SIM FALLBACK ENABLED - simulasyon modunda devam ediliyor.")
+            return True
+        log.error("Pixhawk bulunamadi ve sim fallback kapali. Baslatma iptal.")
+        return False
 
     sensor = vehicle.read_sensors()
     if sensor is None:
@@ -98,8 +102,9 @@ def startup(vehicle):
 
     log.info(f"Batarya: {voltage:.1f}V | Heading: {heading}°")
 
-    if not vehicle.set_mode("ALT_HOLD"):
-        log.error("ALT_HOLD modu ayarlanamadı.")
+    mode = vehicle.flight_mode
+    if not vehicle.set_mode(mode):
+        log.error(f"{mode} modu ayarlanamadı.")
         return False
 
     if not vehicle.arm():
@@ -153,6 +158,7 @@ def main():
         height=cfg_get(cfg, "camera", "height", default=480),
         fps=cfg_get(cfg, "camera", "fps", default=30),
         device_id=cfg_get(cfg, "camera", "device_id", default=0),
+        allow_test_fallback=cfg_get(cfg, "camera", "allow_test_fallback", default=False),
     )
 
     detector = PipeDetector(
@@ -190,6 +196,13 @@ def main():
         connection=cfg_get(cfg, "vehicle", "connection", default="/dev/ttyACM0"),
         baudrate=cfg_get(cfg, "vehicle", "baudrate", default=115200),
         heartbeat_timeout=cfg_get(cfg, "vehicle", "heartbeat_timeout", default=3.0),
+        flight_mode=cfg_get(cfg, "vehicle", "flight_mode", default="MANUAL"),
+        yaw_channel=cfg_get(cfg, "vehicle", "yaw_channel", default=4),
+        forward_channel=cfg_get(cfg, "vehicle", "forward_channel", default=5),
+        pwm_base=cfg_get(cfg, "vehicle", "pwm_base", default=1500),
+        pwm_min=cfg_get(cfg, "vehicle", "pwm_min", default=1100),
+        pwm_max=cfg_get(cfg, "vehicle", "pwm_max", default=1900),
+        allow_sim_fallback=cfg_get(cfg, "vehicle", "allow_sim_fallback", default=False),
     )
 
     safety = SafetyMonitor(
@@ -228,7 +241,10 @@ def main():
 
     # kamera aç
     try:
-        camera.open()
+        ok = camera.open()
+        if not ok:
+            log.error("Kamera açılamadı ve test fallback kapalı. Sistem güvenli şekilde durduruluyor.")
+            sys.exit(1)
     except Exception as e:
         log.error(f"Kamera başlatılamadı: {e}")
         sys.exit(1)
@@ -312,12 +328,12 @@ def main():
             fwd_cmd = 0
             state = action.get("state", "LOST")
 
-            if state in (FSM.SEARCH, FSM.LOST, "SEARCH", "LOST"):
+            if state in (FSM.SEARCH, FSM.LOST):
                 yaw_cmd = action.get("search_yaw", 150)
                 fwd_cmd = 0
                 yaw_pid.reset()
 
-            elif state in (FSM.APPROACH, "APPROACH"):
+            elif state == FSM.APPROACH:
                 if detection.get("found", False):
                     yaw_cmd = int(yaw_pid.compute(detection.get("error_x", 0)))
                     fwd_cmd = action.get("forward_speed", 0)
@@ -326,7 +342,7 @@ def main():
                     fwd_cmd = 0
                     yaw_pid.reset()
 
-            elif state in (FSM.TRACK, "TRACK"):
+            elif state == FSM.TRACK:
                 if detection.get("found", False):
                     yaw_cmd = int(yaw_pid.compute(detection.get("error_x", 0)))
                     fwd_cmd = action.get("forward_speed", 0)
@@ -346,7 +362,7 @@ def main():
                 log.error("RC komutu gönderilemedi. Sistem durduruluyor.")
                 break
 
-           # ---------------- MESAFE ----------------
+            # ---------------- MESAFE ----------------
             # Yöntem config.yaml içinde distance.method ile seçilir.
             # Pinhole için bbox_width yeterli.
             # Lazer için laser_pixel_gap parametresi de gönderilmeli (lazerler monte edildiğinde).
