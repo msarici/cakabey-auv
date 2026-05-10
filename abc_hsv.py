@@ -14,17 +14,23 @@ class HSVTuner:
     def __init__(self, evaluator):
         self.evaluator = evaluator
 
-    def optimize(self, iterations=30, colony_size=20, limit=10):
+    def optimize(self, iterations=30, colony_size=20, limit=10, seed=42,
+                 default_params=None):
+        """
+        default_params: opsiyonel referans HSV (config.yaml'daki). Verilirse
+            ABC bu noktayı initial colony'ye enjekte eder (warm-start) ve
+            sonuç asla referans IoU'nun altına düşmez.
+        """
         # (center, half_width) bounds - geçerli çözüm garantisi için
-        # H için: 0-179 aralık, center 10-170, width 5-60
-        # S ve V için: 0-255 aralık, center 30-225, width 30-100
+        # Turuncu için H ~ 5-30; geniş tutmak ABC'nin yakınsamasını
+        # kötüleştiriyor. Bound'lar pratik turuncu aralığına daraltıldı.
         bounds = [
-            (10, 170),   # h_center
-            (5, 60),     # h_width
-            (30, 225),   # s_center
-            (30, 100),   # s_width
-            (30, 225),   # v_center
-            (30, 100),   # v_width
+            (5, 35),     # h_center  (turuncu odaklı; sarı/kırmızı sınırı)
+            (3, 25),     # h_width   (dar bir bant tipik)
+            (60, 230),   # s_center
+            (20, 100),   # s_width
+            (60, 230),   # v_center
+            (20, 100),   # v_width
         ]
 
         def fitness(solution):
@@ -47,6 +53,20 @@ class HSVTuner:
                 "v_max": v_max,
             })
 
+        # default_params verilmişse (center, half_width) parametrizasyonuna
+        # çevirip warm-start çözümü olarak ABC'ye besle.
+        seeds = []
+        if default_params is not None:
+            d = default_params
+            seeds.append([
+                (d["h_min"] + d["h_max"]) / 2.0,
+                max(1, (d["h_max"] - d["h_min"]) / 2.0),
+                (d["s_min"] + d["s_max"]) / 2.0,
+                max(1, (d["s_max"] - d["s_min"]) / 2.0),
+                (d["v_min"] + d["v_max"]) / 2.0,
+                max(1, (d["v_max"] - d["v_min"]) / 2.0),
+            ])
+
         abc = ABCOptimizer(
             bounds=bounds,
             fitness_fn=fitness,
@@ -54,6 +74,8 @@ class HSVTuner:
             limit=limit,
             iterations=iterations,
             maximize=True,
+            seed=seed,
+            seed_solutions=seeds,
         )
         best, score = abc.run()
 

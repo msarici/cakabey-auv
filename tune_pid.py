@@ -44,7 +44,7 @@ def main():
     tuner = PIDTuner(evaluator=evaluator.evaluate)
 
     start = time.time()
-    result = tuner.optimize(iterations=30)
+    result = tuner.optimize(iterations=30, default_params=default_params)
     elapsed = time.time() - start
 
     optimal_itae = (1.0 / result['score']) - 1.0 if result['score'] > 0 else float('inf')

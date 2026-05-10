@@ -39,7 +39,7 @@ def main():
     tuner = HSVTuner(evaluator=evaluator.evaluate)
 
     start = time.time()
-    result = tuner.optimize(iterations=30)
+    result = tuner.optimize(iterations=30, default_params=default_params)
     elapsed = time.time() - start
 
     print("=" * 50)
