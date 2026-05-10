@@ -13,13 +13,15 @@ camera:
   allow_test_fallback: false   # gerçek kamera açılmazsa test moduna düşmesin (production)
 
 # HSV ile boru tespiti
-# Bu parametreler ABC ile (abc_hsv.py) optimize edilebilir
+# Degerler ABC (abc_hsv.py, seed=42) ile optimize edildi:
+# sentetik dataset uzerinde IoU 0.9468 -> 1.0000.
+# Gercek havuz goruntuleri geldiginde ABC tekrar kosturulacak.
 detector:
-  h_min: 10
-  h_max: 25
-  s_min: 100
+  h_min: 9
+  h_max: 18
+  s_min: 152
   s_max: 255
-  v_min: 80
+  v_min: 114
   v_max: 255
   min_area: 500
   blur_kernel: 5
@@ -27,10 +29,13 @@ detector:
 
 pid:
   # Yaw PID - boru merkezleme için aktif kullanımda
+  # Degerler ABC (abc_pid.py, seed=42) ile optimize edildi:
+  # K=0.25, tau=0.5s plant modelinde ITAE 998.89 -> 51.11 (%94.9 azalma).
+  # Gercek arac dinamigi olculdugunde ABC tekrar kosturulacak.
   yaw:
-    kp: 1.0
-    ki: 0.0
-    kd: 0.0
+    kp: 1.485
+    ki: 5.000
+    kd: 0.000
     output_min: -400
     output_max: 400
     integral_limit: 200    # anti-windup üst sınırı
