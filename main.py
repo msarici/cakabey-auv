@@ -30,6 +30,8 @@ from debug_overlay import draw_overlay
 from telemetry_logger import TelemetryLogger
 from ground_station import GroundStation
 from anomaly_detector import AnomalyDetector
+from video_sender import VideoSender
+from command_link import CommandReceiver
 
 
 logging.basicConfig(
@@ -216,9 +218,13 @@ def main():
         flight_mode=cfg_get(cfg, "vehicle", "flight_mode", default="MANUAL"),
         yaw_channel=cfg_get(cfg, "vehicle", "yaw_channel", default=4),
         forward_channel=cfg_get(cfg, "vehicle", "forward_channel", default=5),
+        vertical_channel=cfg_get(cfg, "vehicle", "vertical_channel", default=3),
         pwm_base=cfg_get(cfg, "vehicle", "pwm_base", default=1500),
         pwm_min=cfg_get(cfg, "vehicle", "pwm_min", default=1100),
         pwm_max=cfg_get(cfg, "vehicle", "pwm_max", default=1900),
+        yaw_reverse=cfg_get(cfg, "vehicle", "yaw_reverse", default=False),
+        forward_reverse=cfg_get(cfg, "vehicle", "forward_reverse", default=False),
+        vertical_reverse=cfg_get(cfg, "vehicle", "vertical_reverse", default=False),
         allow_sim_fallback=sim_vehicle_fallback,
     )
 
@@ -250,6 +256,30 @@ def main():
         enabled=cfg_get(cfg, "ground_station", "enabled", default=True),
         send_interval_s=cfg_get(cfg, "ground_station", "send_interval_s", default=0.1),
     )
+
+    video_sender = VideoSender(
+        host=cfg_get(cfg, "video", "host", default="192.168.2.1"),
+        port=cfg_get(cfg, "video", "port", default=14652),
+        enabled=cfg_get(cfg, "video", "enabled", default=True),
+        send_interval_s=cfg_get(cfg, "video", "send_interval_s", default=0.066),
+        jpeg_quality=cfg_get(cfg, "video", "jpeg_quality", default=60),
+        max_width=cfg_get(cfg, "video", "max_width", default=640),
+    )
+
+    command_rx = CommandReceiver(
+        bind=cfg_get(cfg, "command", "bind", default="0.0.0.0"),
+        port=cfg_get(cfg, "command", "port", default=14653),
+        stale_after_s=cfg_get(cfg, "command", "stale_after_s", default=0.5),
+    )
+
+    # PWM offset scale: vehicle.send_rc'ye verilen sayilar (-pwm_range..+pwm_range).
+    # Manuel komut -1..1'den bu araliga cevriliyor.
+    manual_yaw_scale = cfg_get(cfg, "command", "manual_yaw_scale", default=400)
+    manual_fwd_scale = cfg_get(cfg, "command", "manual_fwd_scale", default=400)
+    manual_vrt_scale = cfg_get(cfg, "command", "manual_vertical_scale", default=400)
+    # Manuel modda ani komut yerine bu kadar PWM/saniye'ye limitle (ESC nazik).
+    # 0 = limit yok. Tipik 2000 (saniyede tam ranj).
+    slew_rate_pwm_per_s = cfg_get(cfg, "command", "slew_rate_pwm_per_s", default=2000)
 
     anomaly_enabled = cfg_get(cfg, "anomaly", "enabled", default=True)
     anomaly_detector = AnomalyDetector(
@@ -291,10 +321,62 @@ def main():
         except Exception:
             pass
         telemetry.close()
+        try:
+            ground.close()
+            video_sender.close()
+            command_rx.close()
+        except Exception:
+            pass
         sys.exit(1)
+
+    # Mod takibi: command receiver istek getirir, FSM'i ona gore set ederiz.
+    current_mode = "auto"
+
+    # Slew rate icin onceki PWM cikislari (ESC inrush koruma).
+    prev_yaw_cmd = 0
+    prev_fwd_cmd = 0
+    prev_vrt_cmd = 0
+    last_motor_t = time.time()
+
+    def _slew(target, prev, dt, rate):
+        if rate <= 0 or dt <= 0:
+            return int(target)
+        max_step = rate * dt
+        diff = target - prev
+        if diff > max_step:
+            return int(prev + max_step)
+        if diff < -max_step:
+            return int(prev - max_step)
+        return int(target)
 
     try:
         while True:
+            # ---------------- KOMUT KANALI ----------------
+            # Once oku ki frame karari komutla tutarli olsun.
+            command_rx.poll()
+            cmd, stale = command_rx.get_command()
+            requested_mode = cmd.get("mode", "auto")
+
+            # Stale link'te (laptop dustu) zorla auto'ya don. ROV otonom
+            # kalir, motor sifirlanmaz — FSM SEARCH dondurur, gorev devam.
+            if stale and current_mode != "auto":
+                log.warning("Komut linki stale. Otonoma donuluyor.")
+                current_mode = "auto"
+                fsm.set_auto()
+                yaw_pid.reset()
+            elif requested_mode != current_mode:
+                current_mode = requested_mode
+                if current_mode == "manual":
+                    fsm.set_manual()
+                    yaw_pid.reset()
+                    log.info("Mod -> MANUAL (yer istasyonu istegi)")
+                else:
+                    fsm.set_auto()
+                    yaw_pid.reset()
+                    log.info("Mod -> AUTO (yer istasyonu istegi)")
+
+            emergency_cmd = bool(cmd.get("emergency_stop", False))
+
             # ---------------- FRAME ----------------
             frame = camera.read()
 
@@ -368,9 +450,23 @@ def main():
             # ---------------- KOMUT HESABI ----------------
             yaw_cmd = 0
             fwd_cmd = 0
+            vrt_cmd = 0
             state = action.get("state", "LOST")
 
-            if state in (FSM.SEARCH, FSM.LOST):
+            if emergency_cmd:
+                # Acil dur: mod ne olursa olsun motorlar sifir.
+                yaw_cmd = 0
+                fwd_cmd = 0
+                vrt_cmd = 0
+                yaw_pid.reset()
+
+            elif state == FSM.MANUAL:
+                # Yer istasyonu surusunde: -1..1 -> PWM offset.
+                yaw_cmd = int(round(cmd.get("yaw", 0.0) * manual_yaw_scale))
+                fwd_cmd = int(round(cmd.get("fwd", 0.0) * manual_fwd_scale))
+                vrt_cmd = int(round(cmd.get("vertical", 0.0) * manual_vrt_scale))
+
+            elif state in (FSM.SEARCH, FSM.LOST):
                 yaw_cmd = action.get("search_yaw", 150)
                 fwd_cmd = 0
                 yaw_pid.reset()
@@ -398,8 +494,25 @@ def main():
                 fwd_cmd = 0
                 yaw_pid.reset()
 
+            # ---------------- SLEW RATE (ESC korumasi) ----------------
+            # Acil durda slew uygulama: en hizli sifirla.
+            now_motor = time.time()
+            dt_motor = max(0.0, now_motor - last_motor_t)
+            last_motor_t = now_motor
+            if emergency_cmd or slew_rate_pwm_per_s <= 0:
+                prev_yaw_cmd = yaw_cmd
+                prev_fwd_cmd = fwd_cmd
+                prev_vrt_cmd = vrt_cmd
+            else:
+                yaw_cmd = _slew(yaw_cmd, prev_yaw_cmd, dt_motor, slew_rate_pwm_per_s)
+                fwd_cmd = _slew(fwd_cmd, prev_fwd_cmd, dt_motor, slew_rate_pwm_per_s)
+                vrt_cmd = _slew(vrt_cmd, prev_vrt_cmd, dt_motor, slew_rate_pwm_per_s)
+                prev_yaw_cmd = yaw_cmd
+                prev_fwd_cmd = fwd_cmd
+                prev_vrt_cmd = vrt_cmd
+
             # ---------------- KOMUT GÖNDER ----------------
-            rc_ok = vehicle.send_rc(yaw=yaw_cmd, forward=fwd_cmd)
+            rc_ok = vehicle.send_rc(yaw=yaw_cmd, forward=fwd_cmd, vertical=vrt_cmd)
             if not rc_ok:
                 log.error("RC komutu gönderilemedi. Sistem durduruluyor.")
                 break
@@ -434,10 +547,23 @@ def main():
                 anomalies=anomalies,
             )
 
+            # ---------------- VIDEO STREAM (CAT6 / UDP) ----------------
+            # Overlay'li frame'i gondermek yerine ham frame gonderiyoruz:
+            # yer istasyonu kendi overlay'ini cizebilir (telemetri ile),
+            # ham gorus debug icin daha kullanisli. Overlay'i istersen view'i
+            # gondermek icin asagidaki video_sender.send(view) yapmak yeter.
+            video_sender.send(frame)
+
             # ---------------- GROUND TELEMETRY (CAT6 / UDP) ----------------
             # mask gibi NumPy verisi JSON'lanmaz; ham scalar/listeleri gonder.
             ground.send({
                 "state": action.get("state", "LOST"),
+                "mode": current_mode,
+                "command_link": {
+                    "stale": bool(cmd.get("stale", False)),
+                    "age": cmd.get("age"),
+                    "last_seq": cmd.get("seq", -1),
+                },
                 "detection": {
                     "found": bool(detection.get("found", False)),
                     "cx": int(detection.get("cx", 0)),
@@ -452,7 +578,11 @@ def main():
                     "voltage": float(sensor.get("voltage", 0.0)) if sensor else 0.0,
                     "heading": int(sensor.get("heading", 0)) if sensor else 0,
                 },
-                "control": {"yaw_cmd": int(yaw_cmd), "fwd_cmd": int(fwd_cmd)},
+                "control": {
+                    "yaw_cmd": int(yaw_cmd),
+                    "fwd_cmd": int(fwd_cmd),
+                    "vrt_cmd": int(vrt_cmd),
+                },
                 "fps": float(fps),
                 "distance_cm": None if distance_cm is None else float(distance_cm),
                 "anomalies": [
@@ -508,7 +638,7 @@ def main():
 
         
         try:
-            vehicle.send_rc(yaw=0, forward=0)
+            vehicle.send_rc(yaw=0, forward=0, vertical=0)
         except Exception:
             pass
 
@@ -529,6 +659,14 @@ def main():
             ground.close()
         except Exception as e:
             log.error(f"Ground station kapanis hatasi: {e}")
+        try:
+            video_sender.close()
+        except Exception as e:
+            log.error(f"Video sender kapanis hatasi: {e}")
+        try:
+            command_rx.close()
+        except Exception as e:
+            log.error(f"Command receiver kapanis hatasi: {e}")
         cv2.destroyAllWindows()
         log.info("Çakabey AUV kapatıldı.")
 

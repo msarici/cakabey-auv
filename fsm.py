@@ -3,6 +3,7 @@ fsm.py — Durum Makinesi
 Çakabey AUV | TEKNOCAK 2026
 
 SEARCH -> APPROACH -> TRACK -> LOST
+MANUAL: yer istasyonundan acik komut. Otonom karari bypass eder.
 """
 
 
@@ -11,6 +12,7 @@ class FSM:
     APPROACH = "APPROACH"
     TRACK = "TRACK"
     LOST = "LOST"
+    MANUAL = "MANUAL"
 
     def __init__(
         self,
@@ -39,7 +41,32 @@ class FSM:
         self.found_count = 0
         self.lost_count = 0
 
+    def set_manual(self):
+        """Manuel moda gec. Otonom sayaclari sifirla — auto'ya donulurken
+        sahte 'biraz once gormustum' durumlari olusmasin."""
+        self.state = self.MANUAL
+        self.found_count = 0
+        self.lost_count = 0
+
+    def set_auto(self):
+        """Manuel'den otonoma don. SEARCH'ten temiz baslat."""
+        self.state = self.SEARCH
+        self.found_count = 0
+        self.lost_count = 0
+
     def update(self, detection):
+        # MANUAL'de otonom karar verme; commander ne dediyse o gider.
+        # Sayaclari da islemiyoruz, manueldeyken tespit gurultusu birikmesin.
+        if self.state == self.MANUAL:
+            return {
+                "state": self.MANUAL,
+                "search_yaw": 0,
+                "forward_speed": 0,
+                "yaw_enabled": False,
+                "forward_enabled": False,
+                "message": "Manuel kumanda",
+            }
+
         found = detection.get("found", False)
         area = detection.get("area", 0)
 

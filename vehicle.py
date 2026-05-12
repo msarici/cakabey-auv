@@ -23,24 +23,39 @@ except ImportError:
 class Vehicle:
     def __init__(self, connection="/dev/ttyACM0", baudrate=115200, heartbeat_timeout=3.0,
                  flight_mode="MANUAL", yaw_channel=4, forward_channel=5,
+                 vertical_channel=3,
                  pwm_base=1500, pwm_min=1100, pwm_max=1900,
+                 yaw_reverse=False, forward_reverse=False, vertical_reverse=False,
                  allow_sim_fallback=False):
         """
         flight_mode: ArduSub için tipik seçenekler MANUAL / STABILIZE / ALT_HOLD.
-        yaw_channel/forward_channel: ArduSub RCMAP_YAW / RCMAP_FORWARD parametreleri ile
-            uyumlu olmalı. Mission Planner / QGC'de doğrula. Default: yaw=4, forward=5.
+        yaw_channel/forward_channel/vertical_channel: ArduSub RCMAP_* parametreleri ile
+            uyumlu olmalı. Mission Planner / QGC'de doğrula.
+            Default ArduSub mapping: yaw=4, forward=5, vertical=3 (RCMAP_THROTTLE).
+        *_reverse: kanal yonu ters cikiyorsa True yap — PWM offset'ini negate eder.
+            Suya girmeden once mutlaka tek tek dogrula (havada test, her motor sirayla).
         pwm_base/min/max: motor PWM aralığı (1100-1900 us, neutral 1500).
         allow_sim_fallback: Pixhawk bağlantısı kurulamazsa sim moduna geçmesine izin
             verir. Production'da False (görev güvenliği). Geliştirme'de True.
         """
         yaw_channel = int(yaw_channel)
         forward_channel = int(forward_channel)
-        if not (1 <= yaw_channel <= 8):
-            raise ValueError(f"yaw_channel 1..8 aralığında olmalı, alındı: {yaw_channel}")
-        if not (1 <= forward_channel <= 8):
-            raise ValueError(f"forward_channel 1..8 aralığında olmalı, alındı: {forward_channel}")
-        if yaw_channel == forward_channel:
-            raise ValueError(f"yaw_channel ve forward_channel aynı olamaz: {yaw_channel}")
+        vertical_channel = int(vertical_channel)
+        for name, val in (("yaw_channel", yaw_channel),
+                          ("forward_channel", forward_channel),
+                          ("vertical_channel", vertical_channel)):
+            if not (1 <= val <= 8):
+                raise ValueError(f"{name} 1..8 aralığında olmalı, alındı: {val}")
+
+        # Kanal carpismasi olursa motor double-write riski (RC override son yazani
+        # uygular ama davranis tahmin edilemez); ayri kanallarda olmali.
+        channels = {yaw_channel, forward_channel, vertical_channel}
+        if len(channels) != 3:
+            raise ValueError(
+                f"yaw/forward/vertical kanallari ayri olmali, alindi: "
+                f"yaw={yaw_channel}, forward={forward_channel}, vertical={vertical_channel}"
+            )
+
         if not (pwm_min < pwm_base < pwm_max):
             raise ValueError(
                 f"pwm_min < pwm_base < pwm_max olmalı, alındı: "
@@ -53,15 +68,19 @@ class Vehicle:
         self.flight_mode = flight_mode
         self.yaw_channel = yaw_channel
         self.forward_channel = forward_channel
+        self.vertical_channel = vertical_channel
         self.pwm_base = pwm_base
         self.pwm_min = pwm_min
         self.pwm_max = pwm_max
+        self.yaw_reverse = bool(yaw_reverse)
+        self.forward_reverse = bool(forward_reverse)
+        self.vertical_reverse = bool(vertical_reverse)
         self.allow_sim_fallback = allow_sim_fallback
 
         self.master = None
         self.sim_mode = True
         self.armed = False
-        self.last_rc = {"yaw": 0, "forward": 0}
+        self.last_rc = {"yaw": 0, "forward": 0, "vertical": 0}
         self._sim_voltage = 16.0
 
         # Sensör cache - en son geçerli değerler
@@ -168,21 +187,33 @@ class Vehicle:
             print(f"[vehicle] Sensör okuma hatası: {e}")
             return None
 
-    def send_rc(self, yaw=0, forward=0):
-        self.last_rc["yaw"] = int(yaw)
-        self.last_rc["forward"] = int(forward)
+    def send_rc(self, yaw=0, forward=0, vertical=0):
+        """
+        yaw/forward/vertical: PWM offset (-pwm_range..+pwm_range, sifir = neutral).
+        vertical: Ultras dikey motorlar (RCMAP_THROTTLE). Pozitif yukari kabul.
+        *_reverse aktifse offset negate edilir — config'den ayarlanir.
+        """
+        yaw_eff = -int(yaw) if self.yaw_reverse else int(yaw)
+        forward_eff = -int(forward) if self.forward_reverse else int(forward)
+        vertical_eff = -int(vertical) if self.vertical_reverse else int(vertical)
+
+        self.last_rc["yaw"] = yaw_eff
+        self.last_rc["forward"] = forward_eff
+        self.last_rc["vertical"] = vertical_eff
 
         if self.sim_mode:
             return True
 
         try:
-            yaw_pwm = self._limit_pwm(self.pwm_base + int(yaw))
-            forward_pwm = self._limit_pwm(self.pwm_base + int(forward))
+            yaw_pwm = self._limit_pwm(self.pwm_base + yaw_eff)
+            forward_pwm = self._limit_pwm(self.pwm_base + forward_eff)
+            vertical_pwm = self._limit_pwm(self.pwm_base + vertical_eff)
 
             # 8 kanal slot'u (RC_CHANNELS_OVERRIDE), 65535 = "değiştirme"
             channels = [65535] * 8
             channels[self.yaw_channel - 1] = yaw_pwm
             channels[self.forward_channel - 1] = forward_pwm
+            channels[self.vertical_channel - 1] = vertical_pwm
 
             self.master.mav.rc_channels_override_send(
                 self.master.target_system,
@@ -195,7 +226,7 @@ class Vehicle:
             return False
 
     def stop(self):
-        return self.send_rc(yaw=0, forward=0)
+        return self.send_rc(yaw=0, forward=0, vertical=0)
 
     def disconnect(self):
         self.master = None

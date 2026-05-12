@@ -68,9 +68,15 @@ vehicle:
   # RC kanal mapping — ArduSub RCMAP_* parametrelerine uy:
   yaw_channel: 4            # RCMAP_YAW (default 4)
   forward_channel: 5        # RCMAP_FORWARD (default 5)
+  vertical_channel: 3       # RCMAP_THROTTLE (default 3) — Ultras dikey motorlar
   pwm_base: 1500
   pwm_min: 1100
   pwm_max: 1900
+  # Kanal yonu ters cikiyorsa havada test sirasinda True yap. Cuma oncesi
+  # mutlaka her motor tek tek dogrula.
+  yaw_reverse: false
+  forward_reverse: false
+  vertical_reverse: false
 
 distance:
   method: "pinhole"       # pinhole / laser
@@ -98,6 +104,27 @@ ground_station:
   host: "192.168.2.1"      # kara istasyonu IP (ROV tether default)
   port: 14651
   send_interval_s: 0.1     # 10 Hz (main loop FPS'inden bagimsiz)
+
+# Video stream (ROV -> yer istasyonu, UDP MJPEG)
+video:
+  enabled: true
+  host: "192.168.2.1"      # yer istasyonu IP
+  port: 14652
+  send_interval_s: 0.066   # ~15 FPS - bant icin
+  jpeg_quality: 60         # 1..100
+  max_width: 640           # frame bundan genise downscale
+
+# Komut kanali (yer istasyonu -> ROV, UDP JSON)
+command:
+  bind: "0.0.0.0"          # ROV'da dinleme IP'si
+  port: 14653
+  stale_after_s: 0.5       # paket bundan eski -> link "dustu", auto'ya don
+  manual_yaw_scale: 400    # -1..+1 komutu bu kadar PWM offset olur
+  manual_fwd_scale: 400
+  manual_vertical_scale: 400
+  # ESC inrush koruma: PWM/saniye limiti. 2000 ~ 0.2 sn'de tam ranj.
+  # 0 = limit yok (eski davranis). Emergency stop bu limitten bagimsiz.
+  slew_rate_pwm_per_s: 2000
 
 # Anomaly detection (yosun, pas, catlak, kopma, eksik parca)
 anomaly:

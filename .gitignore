@@ -4,3 +4,15 @@ logs/
 *.csv
 .vscode/
 *.bak
+
+# DTR build cikti ve ara dosyalari (yerel kalir, git'e gerek yok)
+dtr_*.docx
+dtr_*.md
+dtr_diagram_*.png
+dtr_overlay_*.png
+docx_review_*/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
