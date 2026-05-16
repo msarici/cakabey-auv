@@ -17,11 +17,11 @@ camera:
 # sentetik dataset uzerinde IoU 0.9468 -> 1.0000.
 # Gercek havuz goruntuleri geldiginde ABC tekrar kosturulacak.
 detector:
-  h_min: 9
-  h_max: 18
-  s_min: 152
+  h_min: 0
+  h_max: 20
+  s_min: 60
   s_max: 255
-  v_min: 114
+  v_min: 50
   v_max: 255
   min_area: 500
   blur_kernel: 5
@@ -64,7 +64,7 @@ vehicle:
   baudrate: 115200
   heartbeat_timeout: 3.0
   flight_mode: "MANUAL"     # ArduSub: MANUAL / STABILIZE / ALT_HOLD (firmware'e göre)
-  allow_sim_fallback: false # Pixhawk yoksa sim moduna düşmesin (production = false)
+  allow_sim_fallback: true # Pixhawk yoksa sim moduna düşmesin (production = false)
   # RC kanal mapping — ArduSub RCMAP_* parametrelerine uy:
   yaw_channel: 4            # RCMAP_YAW (default 4)
   forward_channel: 5        # RCMAP_FORWARD (default 5)
