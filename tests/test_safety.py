@@ -28,21 +28,21 @@ def _monitor(**kwargs):
 
 def test_normal_state_no_emergency():
     mon = _monitor()
-    status = mon.check({"voltage": 14.0, "timestamp": time.time()})
+    status = mon.check({"voltage": 14.0, "timestamp": time.monotonic()})
     assert status["emergency"] is False
     assert status["reason"] == ""
 
 
 def test_critical_voltage_triggers_emergency():
     mon = _monitor()
-    status = mon.check({"voltage": 11.5, "timestamp": time.time()})
+    status = mon.check({"voltage": 11.5, "timestamp": time.monotonic()})
     assert status["emergency"] is True
     assert "Batarya" in status["reason"]
 
 
 def test_warn_voltage_only_warning():
     mon = _monitor()
-    status = mon.check({"voltage": 12.5, "timestamp": time.time()})
+    status = mon.check({"voltage": 12.5, "timestamp": time.monotonic()})
     assert status["emergency"] is False
     assert any("Batarya" in w for w in status["warnings"])
 
@@ -50,14 +50,29 @@ def test_warn_voltage_only_warning():
 def test_watchdog_timeout_triggers_emergency():
     """Eski timestamp emergency olmalı, sadece warning değil."""
     mon = _monitor(watchdog_timeout=1.0)
-    old_ts = time.time() - 5.0
+    old_ts = time.monotonic() - 5.0
     status = mon.check({"voltage": 14.0, "timestamp": old_ts})
     assert status["emergency"] is True
-    assert status["reason"] == "Sensor zaman asimi" or "zaman" in status["reason"].lower()
+    assert "zaman" in status["reason"].lower()
 
 
 def test_watchdog_within_timeout_no_emergency():
     mon = _monitor(watchdog_timeout=5.0)
-    recent_ts = time.time() - 0.5
+    recent_ts = time.monotonic() - 0.5
     status = mon.check({"voltage": 14.0, "timestamp": recent_ts})
+    assert status["emergency"] is False
+
+
+def test_check_with_none_sensor_does_not_crash():
+    """sensor None ise pil/watchdog skip, sızıntı yine kontrol edilir."""
+    mon = _monitor()
+    status = mon.check(None)
+    assert status["emergency"] is False
+    assert isinstance(status["warnings"], list)
+
+
+def test_check_with_none_timestamp_skips_watchdog():
+    """timestamp None ise watchdog karşılaştırması skip — test stub'ları için tolerans."""
+    mon = _monitor(watchdog_timeout=0.001)
+    status = mon.check({"voltage": 14.0, "timestamp": None})
     assert status["emergency"] is False

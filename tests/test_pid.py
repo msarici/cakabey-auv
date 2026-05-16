@@ -8,7 +8,28 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import pytest
+
 from pid_controller import PIDController
+
+
+def test_negative_gains_raise():
+    with pytest.raises(ValueError):
+        PIDController(kp=-1.0)
+    with pytest.raises(ValueError):
+        PIDController(ki=-0.5)
+    with pytest.raises(ValueError):
+        PIDController(kd=-0.1)
+
+
+def test_output_min_must_be_less_than_max():
+    with pytest.raises(ValueError):
+        PIDController(output_min=100, output_max=50)
+
+
+def test_negative_integral_limit_raises():
+    with pytest.raises(ValueError):
+        PIDController(integral_limit=-10)
 
 
 def test_first_compute_returns_p_only():

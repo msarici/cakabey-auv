@@ -32,8 +32,9 @@ class Camera:
 
     def open(self):
         if self.source == "csi":
-            pipeline = self._gstreamer_pipeline()
-            self.cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+            self.cap = cv2.VideoCapture(0)
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
 
         elif self.source == "webcam":
             self.cap = cv2.VideoCapture(self.device_id)
@@ -99,9 +100,9 @@ class Camera:
     def _gstreamer_pipeline(self):
         return (
             f"nvarguscamerasrc ! "
-            f"video/x-raw(memory:NVMM), width={self.width}, height={self.height}, "
-            f"format=NV12, framerate={self.fps}/1 ! "
-            f"nvvidconv ! video/x-raw, format=BGRx ! "
+            f"video/x-raw(memory:NVMM), width=1280, height=720, "
+            f"format=NV12, framerate=60/1 ! "
+            f"nvvidconv ! video/x-raw, width={self.width}, height={self.height}, format=BGRx ! "
             f"videoconvert ! video/x-raw, format=BGR ! "
             f"appsink drop=1"
         )

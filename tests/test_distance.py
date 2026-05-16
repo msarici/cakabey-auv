@@ -37,3 +37,22 @@ def test_focal_length_zero_raises():
 def test_real_width_zero_raises():
     with pytest.raises(ValueError):
         DistanceEstimator(pipe_real_width_cm=0)
+
+
+def test_invalid_method_raises():
+    with pytest.raises(ValueError):
+        DistanceEstimator(method="ultrasonic")
+
+
+def test_laser_missing_input_returns_none_and_warns_once(caplog):
+    """method=laser ama laser_pixel_gap verilmediyse warning bir kere basılır,
+    sonra sessiz None — log spam'i olmasın."""
+    est = DistanceEstimator(method="laser")
+    with caplog.at_level("WARNING"):
+        assert est.estimate(bbox_width=100) is None
+        first_count = sum(1 for r in caplog.records if "laser" in r.message.lower())
+        assert first_count >= 1
+        # İkinci çağrıda yeni warning eklenmemeli
+        est.estimate(bbox_width=100)
+        second_count = sum(1 for r in caplog.records if "laser" in r.message.lower())
+        assert second_count == first_count

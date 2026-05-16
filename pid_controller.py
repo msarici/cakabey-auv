@@ -16,6 +16,19 @@ class PIDController:
         output_max=500,
         integral_limit=None,
     ):
+        # Negatif gain işaret hatası demektir — sessizce kabul edersek
+        # kontrol döngüsü ters yönde sürüklenir. Erken patla.
+        if kp < 0 or ki < 0 or kd < 0:
+            raise ValueError(
+                f"PID gain'leri negatif olamaz: kp={kp}, ki={ki}, kd={kd}"
+            )
+        if output_min >= output_max:
+            raise ValueError(
+                f"output_min < output_max olmalı, alındı: min={output_min} max={output_max}"
+            )
+        if integral_limit is not None and integral_limit < 0:
+            raise ValueError(f"integral_limit >= 0 olmalı, alındı: {integral_limit}")
+
         self.kp = kp
         self.ki = ki
         self.kd = kd

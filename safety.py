@@ -65,7 +65,11 @@ class SafetyMonitor:
 
     def check(self, sensor_data):
         """
-        sensor_data: dict (None değil — main.py None ise check çağırmaz).
+        sensor_data: dict ya da None. None ise pil/heading/watchdog skip edilir
+        ama sızıntı yine kontrol edilir (GPIO Pixhawk'tan bağımsız).
+
+        timestamp: vehicle.read_sensors monotonic clock kullanır; bu fonksiyon
+        da time.monotonic() ile karşılaştırır — sistem saati kaymalarına immün.
         """
         status = {
             "emergency": False,
@@ -73,8 +77,21 @@ class SafetyMonitor:
             "warnings": [],
         }
 
+        # Sızıntı önce kontrol — sensor None olsa bile çalışır.
+        if self._check_leak():
+            status["emergency"] = True
+            status["reason"] = "Su kaçağı algılandı"
+            return status
+
+        if not self._leak_initialized and not self._leak_warned_once:
+            status["warnings"].append("Sızıntı sensörü pasif - donanım entegrasyonu eksik")
+            self._leak_warned_once = True
+
+        if sensor_data is None:
+            return status
+
         voltage = sensor_data.get("voltage", 0.0)
-        timestamp = sensor_data.get("timestamp", time.time())
+        timestamp = sensor_data.get("timestamp")
 
         # Kritik batarya
         if voltage > 0 and voltage <= self.critical_voltage:
@@ -86,21 +103,12 @@ class SafetyMonitor:
         if voltage > 0 and voltage <= self.warn_voltage:
             status["warnings"].append(f"Batarya düşük: {voltage:.1f}V")
 
-        # Watchdog - sensör donmuşsa emergency (kontrolden çıkmış araç riski)
-        if time.time() - timestamp > self.watchdog_timeout:
+        # Watchdog - sensör donmuşsa emergency. timestamp None ise atla
+        # (test stub'ları için tolerans).
+        if timestamp is not None and time.monotonic() - timestamp > self.watchdog_timeout:
             status["emergency"] = True
             status["reason"] = "Sensör zaman aşımı"
             return status
-
-        # Sızıntı
-        if self._check_leak():
-            status["emergency"] = True
-            status["reason"] = "Su kaçağı algılandı"
-
-        # Eğer sızıntı sensörü aktif değilse uyarıyı bir kere ver
-        if not self._leak_initialized and not self._leak_warned_once:
-            status["warnings"].append("Sızıntı sensörü pasif - donanım entegrasyonu eksik")
-            self._leak_warned_once = True
 
         return status
 

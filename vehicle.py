@@ -100,12 +100,27 @@ class Vehicle:
             self.master.wait_heartbeat(timeout=self.heartbeat_timeout)
             self.sim_mode = False
             print("[vehicle] Pixhawk bağlantısı kuruldu.")
+            # SYS_STATUS warm-up: heartbeat geldi ama SYS_STATUS henüz queue'ya
+            # düşmediyse startup'taki ilk read_sensors None döner ve aracı
+            # açmaz. Kısa süre pollla, cache dolsun.
+            self._warm_up_sensors(timeout=2.0)
             return True
         except Exception as e:
             print(f"[vehicle] Bağlantı kurulamadı: {e}")
             self.master = None
             self.sim_mode = True
             return False
+
+    def _warm_up_sensors(self, timeout=2.0):
+        """SYS_STATUS gelene kadar (ya da timeout) queue'yu boşalt.
+        connect() içinden çağrılır, _drain_messages aynı cache'i doldurur."""
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        while time.monotonic() < deadline and self._cached_voltage is None:
+            self._drain_messages()
+            if self._cached_voltage is None:
+                time.sleep(0.02)
+        if self._cached_voltage is None:
+            print("[vehicle] SYS_STATUS warm-up timeout — startup yine de denenecek.")
 
     def set_mode(self, mode_name="ALT_HOLD"):
         if self.sim_mode:
@@ -155,24 +170,12 @@ class Vehicle:
         if self.sim_mode:
             return {
                 "voltage": self._sim_voltage,
-                "heading": 0,
-                "timestamp": time.time(),
+                "heading": None,
+                "timestamp": time.monotonic(),
             }
 
         try:
-            now = time.time()
-
-            # SYS_STATUS varsa cache'i güncelle
-            msg = self.master.recv_match(type="SYS_STATUS", blocking=False)
-            if msg is not None:
-                self._cached_voltage = msg.voltage_battery / 1000.0
-                self._last_voltage_time = now
-
-            # VFR_HUD varsa cache'i güncelle
-            att = self.master.recv_match(type="VFR_HUD", blocking=False)
-            if att is not None:
-                self._cached_heading = getattr(att, "heading", 0)
-                self._last_heading_time = now
+            self._drain_messages()
 
             # Hiç voltage gelmemişse None döndür - sahte 0V verme
             if self._cached_voltage is None:
@@ -180,12 +183,35 @@ class Vehicle:
 
             return {
                 "voltage": self._cached_voltage,
-                "heading": self._cached_heading if self._cached_heading is not None else 0,
-                "timestamp": self._last_voltage_time if self._last_voltage_time else now,
+                # heading None ise None bırak — 0 (kuzey) ile karıştırılmasın.
+                "heading": self._cached_heading,
+                # monotonic — sistem saati kaymalarına immün.
+                "timestamp": self._last_voltage_time,
             }
         except Exception as e:
             print(f"[vehicle] Sensör okuma hatası: {e}")
             return None
+
+    def _drain_messages(self):
+        """MAVLink queue'yu non-blocking olarak boşalt; SYS_STATUS / VFR_HUD
+        gelirse cache'leri güncelle. recv_match(type=X, blocking=False) tek
+        type ararken type-mismatch mesajları discard ediyor — bu loop hem
+        tüm mesaj türlerini tek geçişte yakalar hem buffer'ı boş tutar."""
+        if self.master is None:
+            return
+        now = time.monotonic()
+        # Sonsuz dönmesin diye üst sınır; pratikte burst nadir.
+        for _ in range(256):
+            msg = self.master.recv_match(blocking=False)
+            if msg is None:
+                break
+            mtype = msg.get_type()
+            if mtype == "SYS_STATUS":
+                self._cached_voltage = msg.voltage_battery / 1000.0
+                self._last_voltage_time = now
+            elif mtype == "VFR_HUD":
+                self._cached_heading = getattr(msg, "heading", None)
+                self._last_heading_time = now
 
     def send_rc(self, yaw=0, forward=0, vertical=0):
         """

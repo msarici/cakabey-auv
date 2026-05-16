@@ -67,6 +67,10 @@ class TelemetryLogger:
             f"{a.get('type', '?')}:{a.get('confidence', 0):.2f}" for a in anomalies
         )
 
+        # voltage None ise CSV'ye boş yaz — "0V görüldü, pil öldü mü?" yanılgısı olmasın.
+        voltage_val = None if sensor is None else sensor.get("voltage")
+        voltage_cell = "" if voltage_val is None else voltage_val
+
         self.writer.writerow([
             time.time(),
             action.get("state", ""),
@@ -76,7 +80,7 @@ class TelemetryLogger:
             detection.get("area", 0),
             yaw_cmd,
             fwd_cmd,
-            0 if sensor is None else sensor.get("voltage", 0),
+            voltage_cell,
             round(fps, 2),
             "" if distance_cm is None else round(distance_cm, 2),
             anomaly_str,

@@ -98,13 +98,14 @@ def startup(vehicle):
         return False
 
     voltage = sensor.get("voltage", 0.0)
-    heading = sensor.get("heading", 0)
+    heading = sensor.get("heading")
 
     if voltage > 0 and voltage < 12.0:
         log.error(f"Batarya kritik seviyede: {voltage:.1f}V")
         return False
 
-    log.info(f"Batarya: {voltage:.1f}V | Heading: {heading}°")
+    heading_str = "—" if heading is None else f"{heading}°"
+    log.info(f"Batarya: {voltage:.1f}V | Heading: {heading_str}")
 
     mode = vehicle.flight_mode
     if not vehicle.set_mode(mode):
@@ -399,7 +400,6 @@ def main():
             if sensor is None:
                 sensor_loss_count += 1
                 log.warning(f"Sensör verisi alınamadı ({sensor_loss_count}/{max_sensor_loss})")
-
                 if sensor_loss_count >= max_sensor_loss:
                     log.critical("Sensör verisi uzun süredir yok. Sistem güvenlik nedeniyle durduruluyor.")
                     vehicle.stop()
@@ -407,15 +407,17 @@ def main():
             else:
                 sensor_loss_count = 0
 
-                safety_status = safety.check(sensor)
+            # Safety check sensor None olsa bile çağrılır — sızıntı GPIO
+            # Pixhawk'tan bağımsız; pil/watchdog kontrolu sensor olmadan zaten skip ediliyor.
+            safety_status = safety.check(sensor)
 
-                if safety_status.get("emergency", False):
-                    log.critical(safety_status.get("reason", "Acil durum"))
-                    vehicle.stop()
-                    break
+            if safety_status.get("emergency", False):
+                log.critical(safety_status.get("reason", "Acil durum"))
+                vehicle.stop()
+                break
 
-                for warning in safety_status.get("warnings", []):
-                    log.warning(warning)
+            for warning in safety_status.get("warnings", []):
+                log.warning(warning)
 
             # ---------------- BORU TESPİT ----------------
             try:
@@ -575,8 +577,12 @@ def main():
                     "height": int(detection.get("height", 0)),
                 },
                 "sensor": {
-                    "voltage": float(sensor.get("voltage", 0.0)) if sensor else 0.0,
-                    "heading": int(sensor.get("heading", 0)) if sensor else 0,
+                    "voltage": (float(sensor["voltage"])
+                                if sensor and sensor.get("voltage") is not None
+                                else None),
+                    "heading": (int(sensor["heading"])
+                                if sensor and sensor.get("heading") is not None
+                                else None),
                 },
                 "control": {
                     "yaw_cmd": int(yaw_cmd),

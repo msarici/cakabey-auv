@@ -4,10 +4,10 @@
 # ============================================================
 
 camera:
-  width: 640
-  height: 480
+  width: 1280
+  height: 720
   fps: 30
-  source: "test"          # csi / webcam / test
+  source: "csi"          # csi / webcam / test
   device_id: 0
   max_frame_loss: 30
   allow_test_fallback: false   # gerçek kamera açılmazsa test moduna düşmesin (production)
@@ -60,7 +60,7 @@ fsm:
   track_slow_factor: 0.6
 
 vehicle:
-  connection: "/dev/ttyACM0"
+  connection: "udp:127.0.0.1:14551"
   baudrate: 115200
   heartbeat_timeout: 3.0
   flight_mode: "MANUAL"     # ArduSub: MANUAL / STABILIZE / ALT_HOLD (firmware'e göre)
@@ -112,7 +112,7 @@ video:
   port: 14652
   send_interval_s: 0.066   # ~15 FPS - bant icin
   jpeg_quality: 60         # 1..100
-  max_width: 640           # frame bundan genise downscale
+  max_width: 1280           # frame bundan genise downscale
 
 # Komut kanali (yer istasyonu -> ROV, UDP JSON)
 command:

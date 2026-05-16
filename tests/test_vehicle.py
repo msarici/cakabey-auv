@@ -115,3 +115,30 @@ def test_stop_zeroes_all_axes():
     assert v.last_rc["yaw"] == 0
     assert v.last_rc["forward"] == 0
     assert v.last_rc["vertical"] == 0
+
+
+def test_sim_read_sensors_returns_monotonic_timestamp_and_none_heading():
+    """Sim modunda heading None (kuzey=0 ile karıştırılmasın),
+    timestamp monotonic (wall-clock kaymalarına immün)."""
+    v = Vehicle()
+    sensor = v.read_sensors()
+    assert sensor is not None
+    assert sensor["heading"] is None
+    # monotonic boot'tan beri saniye — küçük pozitif sayı, time.time() değil
+    import time as _t
+    assert sensor["timestamp"] < _t.time()
+
+
+def test_read_sensors_returns_none_before_sys_status():
+    """Real mode'da SYS_STATUS hiç gelmemişse None — sahte 0V vermesin."""
+    v = Vehicle()
+    v.sim_mode = False
+    # master None, drain hiçbir şey yapmaz, cache boş kalır
+    assert v.read_sensors() is None
+
+
+def test_drain_messages_no_master_safe():
+    """master None iken drain çağrısı patlar mı?"""
+    v = Vehicle()
+    v.master = None
+    v._drain_messages()  # raise etmemeli

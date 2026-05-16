@@ -51,6 +51,9 @@ class AnomalyDetector:
         break_min_contour_area=200,
         # break öncesi morfolojik close kernel'i: color-change delikleri
         # (rust/algae) bridgelensin ama gerçek pipe gap (>kernel) sağ kalsın.
+        # KISIT: kernel YATAY (w >> h) — boru ekran üzerinde yatay duruyor
+        # varsayımıyla. Pipe dikey/eğik konumlandırılırsa false negative üretir.
+        # Çözüm (gelecekte): contour PCA ile orientation ölç, kernel'i döndür.
         break_close_kernel_w=49,
         break_close_kernel_h=9,
         # missing (eksik parça) - aspect ratio (sadece "çok kısa" tetikler)
