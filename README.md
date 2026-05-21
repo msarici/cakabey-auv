@@ -1,4 +1,4 @@
-# Çakabey AUV
+# Çakabey AUV Mert Sarıcı
 
 **TEKNOCAK 2026** insansız sualtı aracı (ROV) yazılımı.
 
