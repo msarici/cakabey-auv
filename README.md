@@ -7,5 +7,3 @@
 ![License](https://img.shields.io/badge/License-MIT-lightgrey)
 
 Autonomy, computer-vision, control, telemetry, and safety stack for the **Cakabey underwater robotics project** — **3rd place nationally, TEKNOCAK 2026** (Ankara, Turkey).
-
-I was the Software Team Lead and sole software developer: I designed and implemented the complete architecture — vision, autonomous behavior, PID control, Pixhawk/MAVLink integration, safety monitoring, telemetry, remote command, simulation support, optimization tooling
