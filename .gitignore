@@ -1,18 +1,34 @@
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Runtime output
 logs/
+*.log
 *.csv
+
+# Local tools and editors
+.claude/
 .vscode/
+.idea/
 *.bak
 
-# DTR build cikti ve ara dosyalari (yerel kalir, git'e gerek yok)
+# DTR build output and local working files
 dtr_*.docx
 dtr_*.md
 dtr_diagram_*.png
 dtr_overlay_*.png
 docx_review_*/
 
-# OS / IDE
+# OS
 .DS_Store
 Thumbs.db
-.idea/
