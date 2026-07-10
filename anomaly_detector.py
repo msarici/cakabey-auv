@@ -215,10 +215,12 @@ class AnomalyDetector:
             return []
 
         # Tüm line endpoint'lerini kapsayan bbox
+        # Not: HoughLinesP çıktı şekli OpenCV sürümüne göre (N,1,4) veya (N,4)
+        # olabilir; reshape(-1, 4) her iki durumu da normalize eder.
         xs = []
         ys = []
-        for line in lines:
-            x1, y1, x2, y2 = line[0]
+        for line in lines.reshape(-1, 4):
+            x1, y1, x2, y2 = line
             xs.extend([x1, x2])
             ys.extend([y1, y2])
         bx = int(min(xs))
