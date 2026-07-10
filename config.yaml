@@ -21,7 +21,7 @@ detector:
   h_max: 20
   s_min: 60
   s_max: 255
-  v_min: 50
+  v_min: 20
   v_max: 255
   min_area: 500
   blur_kernel: 5
@@ -60,7 +60,7 @@ fsm:
   track_slow_factor: 0.6
 
 vehicle:
-  connection: "udp:127.0.0.1:14551"
+  connection: "tcp:127.0.0.1:1"
   baudrate: 115200
   heartbeat_timeout: 3.0
   flight_mode: "MANUAL"     # ArduSub: MANUAL / STABILIZE / ALT_HOLD (firmware'e göre)
@@ -129,8 +129,8 @@ command:
 # Anomaly detection (yosun, pas, catlak, kopma, eksik parca)
 anomaly:
   enabled: true
-  algae_ratio_thresh: 0.05    # ROI'de yesil piksel orani esigi
-  rust_ratio_thresh: 0.03     # ROI'de pas piksel orani esigi
-  crack_min_lines: 1          # HoughLinesP minimum cizgi sayisi
-  break_min_contour_area: 200 # kopma icin contour minimum alan
-  missing_aspect_min: 3.0     # boru en/boy oranı bunun altıysa "eksik"
+  algae_ratio_thresh: 0.30    # ROI'de yesil piksel orani esigi
+  rust_ratio_thresh: 0.50    # ROI'de pas piksel orani esigi
+  crack_min_lines: 15         # HoughLinesP minimum cizgi sayisi
+  break_min_contour_area: 1000 # kopma icin contour minimum alan
+  missing_aspect_min: 1.5     # boru en/boy oranı bunun altıysa "eksik"

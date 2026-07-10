@@ -337,7 +337,7 @@ def main():
     prev_yaw_cmd = 0
     prev_fwd_cmd = 0
     prev_vrt_cmd = 0
-    last_motor_t = time.time()
+    last_motor_t = time.monotonic()
 
     def _slew(target, prev, dt, rate):
         if rate <= 0 or dt <= 0:
@@ -498,7 +498,7 @@ def main():
 
             # ---------------- SLEW RATE (ESC korumasi) ----------------
             # Acil durda slew uygulama: en hizli sifirla.
-            now_motor = time.time()
+            now_motor = time.monotonic()
             dt_motor = max(0.0, now_motor - last_motor_t)
             last_motor_t = now_motor
             if emergency_cmd or slew_rate_pwm_per_s <= 0:

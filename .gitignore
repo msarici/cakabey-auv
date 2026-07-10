@@ -32,3 +32,6 @@ docx_review_*/
 # OS
 .DS_Store
 Thumbs.db
+*.tlog
+*.tlog.raw
+*.parm
