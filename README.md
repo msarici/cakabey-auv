@@ -1,107 +1,160 @@
-# Çakabey AUV Mert Sarıcı
+# Çakabey Underwater Robotics Software
 
-**TEKNOCAK 2026** insansız sualtı aracı (ROV) yazılımı.
+[![Tests](https://github.com/msarici/cakabey-auv/actions/workflows/tests.yml/badge.svg)](https://github.com/msarici/cakabey-auv/actions/workflows/tests.yml)
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
+![License](https://img.shields.io/badge/License-MIT-green)
 
-Tek bir kameradan boruyu algılar, FSM ile arar/yaklaşır/takip eder, PID ile merkezde tutar; donanım güvenliğini (pil / sızıntı / sensör watchdog) ayrı bir döngüde izler ve telemetriyi kara istasyonuna UDP üzerinden gönderir.
+A modular Python software prototype for a tethered underwater vehicle, developed for the **TEKNOCAK 2026** competition.
 
-> **Durum:** Tasarım ve tezgâh testi aşaması. Havuz testleri henüz yapılmadı; parametreler sentetik veri ve SITL üzerinde optimize edildi, gerçek araç dinamiği ölçüldüğünde tekrar tune edilecek.
+The stack combines OpenCV-based visual detection, autonomous state control, PID steering, Pixhawk/ArduSub communication, remote commands, telemetry, video streaming, safety monitoring, and simulation support.
 
-## Mimari
+## Result and responsibility
 
-```
+- **Team result:** 3rd place at TEKNOCAK 2026
+- **My role:** Software Team Lead
+- **My scope:** software architecture, computer vision, autonomous control logic, PID steering, MAVLink integration, telemetry, remote commands, safety logic, simulation support, and automated tests
+
+## Validation status
+
+The software was evaluated with automated tests, synthetic camera input, simulated vehicle connections, and bench-level development.
+
+**Full in-water autonomous validation was not completed** because the vehicle's mechanical and electrical subsystems were not ready for safe pool testing. This repository documents the completed software engineering work and does not claim successful underwater autonomous operation.
+
+## Core capabilities
+
+- HSV-based pipe detection with OpenCV
+- `SEARCH → APPROACH → TRACK → LOST` autonomous state machine
+- Manual and autonomous operating modes
+- PID yaw control with anti-windup and output limiting
+- Pixhawk and ArduSub communication through MAVLink
+- Battery, sensor-watchdog, frame-loss, and leak-monitoring logic
+- UDP telemetry and remote command channels
+- UDP/MJPEG video streaming
+- CSV telemetry logging and visual debugging overlays
+- Simulation fallbacks for development without vehicle hardware
+- Artificial Bee Colony tuning tools for PID and HSV parameters
+- Automated tests for control, safety, communication, and vehicle modules
+
+## Architecture
+
+```text
             ┌──────────┐
-            │  camera  │  (CSI / webcam / test)
+            │  camera  │  CSI / webcam / synthetic input
             └─────┬────┘
                   │ frame
                   ▼
           ┌───────────────┐      ┌──────────────────┐
-          │ pipe_detector │      │ anomaly_detector │  (yosun/pas/kopma)
+          │ pipe_detector │      │ anomaly_detector │
           └───────┬───────┘      └──────────────────┘
-                  │ bbox
+                  │ detection
                   ▼
             ┌──────────┐         ┌──────────────┐
-            │   fsm    │◄────────│ command_link │  (manuel komut, UDP)
+            │   FSM    │◄────────│ command_link │  manual commands / UDP
             └─────┬────┘         └──────────────┘
-                  │ hedef
+                  │ target action
                   ▼
         ┌─────────────────┐
-        │ pid_controller  │  (yaw)
+        │ pid_controller  │  yaw control
         └────────┬────────┘
-                 │ PWM
+                 │ PWM offset
                  ▼
             ┌─────────┐         ┌─────────────────┐
-            │ vehicle │◄────────│ safety (leak,   │
-            │ MAVLink │         │ batarya, wd)    │
-            └─────────┘         └─────────────────┘
+            │ vehicle │◄────────│ safety monitor  │
+            │ MAVLink │         │ battery/leak/wd │
+            └────┬────┘         └─────────────────┘
                  │
                  ▼
-   ┌──────────────────────────────┐
-   │ telemetry_logger (CSV)       │
-   │ ground_station   (UDP/JSON)  │
-   │ video_sender     (UDP/MJPEG) │
-   └──────────────────────────────┘
+   ┌────────────────────────────────┐
+   │ telemetry_logger   CSV         │
+   │ ground_station     UDP / JSON  │
+   │ video_sender       UDP / MJPEG │
+   └────────────────────────────────┘
 ```
 
-## Modüller
+## Main modules
 
-| Dosya | İş |
+| File | Responsibility |
 |---|---|
-| `main.py` | Ana kontrol döngüsü |
-| `camera.py` | OpenCV/GStreamer kamera arayüzü |
-| `pipe_detector.py` | HSV tabanlı boru tespiti |
-| `anomaly_detector.py` | Yosun / pas / çatlak / kopma / eksik parça |
-| `fsm.py` | `SEARCH → APPROACH → TRACK → LOST` (+ `MANUAL`) |
-| `pid_controller.py` | Yaw PID (anti-windup, output clamp) |
-| `vehicle.py` | Pixhawk MAVLink + sim fallback |
-| `safety.py` | Pil / sızıntı (GPIO) / watchdog |
-| `distance.py` | Pinhole veya paralel-lazer mesafe |
-| `ground_station.py` / `ground_viewer.py` | Kara istasyonu telemetri (UDP/JSON) |
-| `video_sender.py` / `video_viewer.py` | UDP MJPEG video stream |
-| `command_link.py` / `manual_input.py` | Yer → ROV manuel komut kanalı |
-| `telemetry_logger.py` | CSV log |
-| `debug_overlay.py` | Görsel overlay (state, FPS, bbox, anomali) |
+| `main.py` | Main control loop and subsystem orchestration |
+| `camera.py` | OpenCV/GStreamer camera interface |
+| `pipe_detector.py` | HSV-based pipe detection |
+| `anomaly_detector.py` | Algae, rust, crack, break, and missing-part heuristics |
+| `fsm.py` | Autonomous and manual operating states |
+| `pid_controller.py` | Yaw PID with anti-windup and output limits |
+| `vehicle.py` | Pixhawk/MAVLink communication and simulation fallback |
+| `safety.py` | Battery, leak GPIO, and sensor-watchdog monitoring |
+| `distance.py` | Pinhole or parallel-laser distance estimation |
+| `ground_station.py` / `ground_viewer.py` | UDP/JSON telemetry channel |
+| `video_sender.py` / `video_viewer.py` | UDP/MJPEG video channel |
+| `command_link.py` / `manual_input.py` | Ground-to-vehicle command channel |
+| `telemetry_logger.py` | CSV telemetry logging |
+| `debug_overlay.py` | Runtime state, FPS, detection, and anomaly overlays |
 
-### Tuning araçları
-| Dosya | İş |
+### Tuning and evaluation
+
+| File | Responsibility |
 |---|---|
-| `abc_optimizer.py` | Yapay arı kolonisi (ABC) algoritması, `seed=42`, warm-start destekli |
-| `abc_pid.py`, `tune_pid.py` | PID gain'lerini plant modeli üzerinde optimize eder |
-| `abc_hsv.py`, `tune_hsv.py` | HSV eşiklerini etiketli görüntülerden optimize eder |
-| `evaluator_pid.py`, `evaluator_hsv.py`, `evaluator_anomaly.py` | Performans metrikleri |
+| `abc_optimizer.py` | Reproducible Artificial Bee Colony optimizer with warm start |
+| `abc_pid.py`, `tune_pid.py` | PID gain optimization against a plant model |
+| `abc_hsv.py`, `tune_hsv.py` | HSV threshold optimization using labeled images |
+| `evaluator_pid.py`, `evaluator_hsv.py`, `evaluator_anomaly.py` | Evaluation metrics |
 
-## Donanım
+## Technology stack
 
-- **Frame:** BlueROV2 (standart, Heavy değil)
-- **Otopilot:** Pixhawk + ArduSub (MAVLink)
-- **İşlemci:** Jetson (CSI kamera için `nvarguscamerasrc` pipeline'ı mevcut)
-- **Kamera:** 1280×720 @ 60fps, 720p downscale
-- **Mesafe:** Pinhole (boru genişliği) veya paralel lazer (piksel boşluğu)
-- **Sızıntı:** Jetson GPIO pin 17 (aktif-high)
-- **Tether:** CAT6, BlueROV2 standart IP (192.168.2.1)
+- Python 3.10+
+- OpenCV and NumPy
+- pymavlink
+- Pixhawk and ArduSub
+- NVIDIA Jetson / embedded Linux
+- UDP, JSON, and MJPEG
+- pytest
 
-## Kurulum
+## Quick start
 
 ```bash
 git clone https://github.com/msarici/cakabey-auv.git
 cd cakabey-auv
+python -m venv .venv
+```
+
+Activate the environment:
+
+```bash
+# Linux / macOS
+source .venv/bin/activate
+
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+```
+
+Install dependencies:
+
+```bash
+python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-Sızıntı sensörü için Jetson'da ek olarak:
+## Run without vehicle hardware
+
+The explicit `--sim` flag enables synthetic camera input and vehicle simulation fallback:
 
 ```bash
-sudo apt install python3-jetson-gpio
+python main.py --sim
 ```
 
-> Geliştirme makinelerinde `Jetson.GPIO` import hatası verirse sızıntı sensörü pasif olur, yazılım çalışmaya devam eder (`safety` warning üretir).
-
-## Çalıştırma
+Run without the OpenCV display window:
 
 ```bash
-python main.py
+python main.py --sim --no-display
 ```
 
-Konfigürasyon `config.yaml` üzerinden. SITL ile tezgâh testi için:
+> Simulation mode is for development and demonstration. It must not be used as a substitute for hardware validation.
+
+## Configuration
+
+Runtime settings are stored in `config.yaml`.
+
+Example SITL connection:
 
 ```yaml
 vehicle:
@@ -111,7 +164,7 @@ camera:
   source: "test"
 ```
 
-Gerçek araç:
+Example physical connection:
 
 ```yaml
 vehicle:
@@ -120,23 +173,57 @@ camera:
   source: "csi"
 ```
 
-## Test
+Jetson leak-sensor support additionally requires:
+
+```bash
+sudo apt install python3-jetson-gpio
+```
+
+When `Jetson.GPIO` is unavailable, the leak input is disabled and the safety module emits a warning.
+
+## Tests
+
+Run the full test suite:
 
 ```bash
 python -m pytest tests/ -v
 ```
 
-Test kapsamı: PID, FSM, safety, vehicle (sim), distance, anomaly, ground station, command link, video sender.
+The suite covers PID control, FSM transitions, startup behavior, safety monitoring, simulated vehicle communication, distance estimation, anomaly logic, ground-station communication, manual commands, and video transport.
 
-## Telemetri kanalları (default portlar)
+GitHub Actions runs the test suite on every push and pull request.
 
-| Kanal | Port | Format |
-|---|---|---|
+## Default network channels
+
+| Channel | Port | Format |
+|---|---:|---|
 | Pixhawk MAVLink | 14551 | UDP |
-| Telemetri (ROV → yer) | 14651 | UDP / JSON |
-| Video (ROV → yer) | 14652 | UDP / MJPEG |
-| Komut (yer → ROV) | 14653 | UDP / JSON |
+| Vehicle → ground telemetry | 14651 | UDP / JSON |
+| Vehicle → ground video | 14652 | UDP / MJPEG |
+| Ground → vehicle commands | 14653 | UDP / JSON |
 
-## Lisans
+## Hardware target
 
-MIT — bkz. [LICENSE](LICENSE).
+- BlueROV2-style standard frame
+- Pixhawk running ArduSub
+- NVIDIA Jetson with CSI camera support
+- 1280×720 camera input with runtime downscaling
+- Optional pinhole or parallel-laser distance estimation
+- Optional active-high leak input on Jetson GPIO pin 17
+- CAT6 tether and BlueROV2-style network layout
+
+## Known limitations
+
+- No completed in-water autonomous validation
+- Control parameters require retuning against measured vehicle dynamics
+- The anomaly detector uses classical image-processing heuristics rather than a trained model
+- Leak monitoring requires physical Jetson GPIO integration
+- Safety-critical deployment requires additional hardware-in-the-loop and field testing
+
+## Author
+
+**Mert Sarıcı** — software architecture and implementation
+
+## License
+
+Released under the [MIT License](LICENSE).
