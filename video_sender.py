@@ -21,6 +21,8 @@ import time
 
 import cv2
 
+from telemetry_auth import DatagramAuthenticator, loopback_address, OVERHEAD
+
 HEADER = struct.Struct(">IHH")
 HEADER_SIZE = HEADER.size
 # UDP datagram pratik max ~65507. Guvenli olsun diye 60000 secelim;
@@ -30,7 +32,8 @@ MAX_CHUNK_PAYLOAD = 60000
 
 class VideoSender:
     def __init__(self, host="192.168.2.1", port=14652, enabled=True,
-                 send_interval_s=0.066, jpeg_quality=60, max_width=640):
+                 send_interval_s=0.066, jpeg_quality=60, max_width=640,
+                 auth_key=None, allow_insecure=False):
         """
         host/port: yer istasyonu UDP hedefi.
         enabled: False ise socket acmaz, send() no-op.
@@ -39,7 +42,8 @@ class VideoSender:
         jpeg_quality: 1..100. 60 dengeli (~30-50 KB per 480p frame).
         max_width: frame bundan buyukse downscale edilir (CPU/bant tasarrufu).
         """
-        self.host = host
+        self.host = loopback_address(host) if allow_insecure and enabled else host
+        self._auth = DatagramAuthenticator("video", auth_key, allow_insecure, enabled)
         self.port = int(port)
         self.enabled = bool(enabled)
         self.send_interval_s = float(send_interval_s)
@@ -60,7 +64,7 @@ class VideoSender:
     def _open_socket(self):
         try:
             self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self._sock.settimeout(0.05)
+            self._sock.setblocking(False)
         except Exception as e:
             print(f"[video] Socket acilamadi: {e}")
             self._sock = None
@@ -101,22 +105,24 @@ class VideoSender:
             total_size = len(data)
             total_chunks = max(1, (total_size + MAX_CHUNK_PAYLOAD - 1) // MAX_CHUNK_PAYLOAD)
             # uint16 total_chunks: 65535 limit. Pratikte asla cikamayiz.
-            if total_chunks > 0xFFFF:
+            if total_chunks > 64 or total_size > (4 << 20):
                 self._send_errors += 1
                 return False
 
             fid = self._frame_id & 0xFFFFFFFF
+            # Reserve an ID even when a partial UDP send fails; never mix
+            # chunks from a later image with the unfinished frame.
+            self._frame_id = (self._frame_id + 1) & 0xFFFFFFFF
             for chunk_id in range(total_chunks):
                 start = chunk_id * MAX_CHUNK_PAYLOAD
                 end = min(start + MAX_CHUNK_PAYLOAD, total_size)
                 payload = data[start:end]
                 header = HEADER.pack(fid, chunk_id, total_chunks)
-                self._sock.sendto(header + payload, (self.host, self.port))
+                self._sock.sendto(self._auth.encode(header + payload), (self.host, self.port))
 
-            self._frame_id = (self._frame_id + 1) & 0xFFFFFFFF
             self._last_send_t = now
             self._frames_sent += 1
-            self._bytes_sent += total_size + HEADER_SIZE * total_chunks
+            self._bytes_sent += total_size + (HEADER_SIZE + (OVERHEAD if self._auth._key else 0)) * total_chunks
             return True
 
         except (BlockingIOError, InterruptedError, socket.timeout):

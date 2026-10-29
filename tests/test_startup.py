@@ -61,16 +61,13 @@ def test_startup_fails_with_critical_battery():
     assert main_module.startup(veh) is False
 
 
-def test_sim_flag_enables_fallback_via_real_vehicle_class():
-    """
-    --sim flag'i runtime'da Vehicle.allow_sim_fallback=True yapar.
-    Gerçek Vehicle sınıfı + sahte connect (Pixhawk yok) ile startup geçmeli.
-    """
-    from vehicle import Vehicle
-    veh = Vehicle(allow_sim_fallback=True)
-    # connect() pymavlink yoksa veya bağlantı kurulamazsa False döner.
-    # Test ortamında Pixhawk olmadığı için connect() False bekleniyor.
-    # startup(veh) bu durumda allow_sim_fallback=True olduğu için True dönmeli.
+def test_explicit_simulation_never_opens_pixhawk(monkeypatch):
+    import vehicle as vehicle_module
+    from unittest.mock import Mock
+    connect = Mock(side_effect=AssertionError("Hardware must not be opened"))
+    monkeypatch.setattr(vehicle_module.mavutil, "mavlink_connection", connect)
+    veh = vehicle_module.Vehicle(simulation=True)
     assert main_module.startup(veh) is True
-    # Sim modunda kalınmış olmalı (connect başarısızdı ama fallback açıktı)
     assert veh.sim_mode is True
+    assert veh.armed is True
+    connect.assert_not_called()

@@ -15,6 +15,19 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from command_link import CommandSender, CommandReceiver, _clamp
 
 
+@pytest.fixture(autouse=True)
+def command_key(monkeypatch):
+    monkeypatch.setenv("CAKABEY_COMMAND_KEY", "test-key-" * 8)
+
+
+def handshake(tx, rx):
+    tx.send({})
+    rx.poll()
+    tx._handshake(time.monotonic())
+    assert tx._nonce is not None
+
+
+
 def test_clamp_basic():
     assert _clamp(0.5) == 0.5
     assert _clamp(-2.0) == -1.0
@@ -36,6 +49,7 @@ def test_loopback_round_trip():
     rx = CommandReceiver(bind="127.0.0.1", port=port, stale_after_s=10.0)
     tx = CommandSender(host="127.0.0.1", port=port, send_interval_s=0.0)
     try:
+        handshake(tx, rx)
         tx.send({"fwd": 0.7, "yaw": -0.4, "vertical": 0.2,
                  "emergency_stop": False}, mode="manual")
         # Pakete kuyrukta yer bulmasi icin kucuk bekleme
@@ -71,6 +85,7 @@ def test_receiver_stale_after_old_packet():
     rx = CommandReceiver(bind="127.0.0.1", port=port, stale_after_s=0.05)
     tx = CommandSender(host="127.0.0.1", port=port, send_interval_s=0.0)
     try:
+        handshake(tx, rx)
         tx.send({"fwd": 0.5}, mode="manual")
         time.sleep(0.05)
         rx.poll()
@@ -99,6 +114,7 @@ def test_receiver_keeps_latest_packet():
     rx = CommandReceiver(bind="127.0.0.1", port=port, stale_after_s=10.0)
     tx = CommandSender(host="127.0.0.1", port=port, send_interval_s=0.0)
     try:
+        handshake(tx, rx)
         for fwd_v in [0.1, 0.2, 0.3]:
             tx.send({"fwd": fwd_v}, mode="manual")
             time.sleep(0.02)
@@ -116,6 +132,7 @@ def test_sender_clamps_values():
     rx = CommandReceiver(bind="127.0.0.1", port=port, stale_after_s=10.0)
     tx = CommandSender(host="127.0.0.1", port=port, send_interval_s=0.0)
     try:
+        handshake(tx, rx)
         tx.send({"fwd": 5.0, "yaw": -9.9}, mode="manual")
         time.sleep(0.05)
         rx.poll()

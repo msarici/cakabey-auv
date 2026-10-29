@@ -4,13 +4,14 @@ main.py — Ana Kontrol Döngüsü
 Yazar: Mert Sarıcı
 
 Ana akış:
-kamera -> güvenlik -> tespit -> FSM -> motor komutu -> overlay/log -> kapanış
+güvenlik -> kamera -> tespit -> FSM -> motor komutu -> overlay/log -> kapanış
 """
 
 import sys
 import time
 import argparse
 import logging
+import math
 import cv2
 
 try:
@@ -23,7 +24,7 @@ from camera import Camera
 from pipe_detector import PipeDetector
 from pid_controller import PIDController
 from fsm import FSM
-from vehicle import Vehicle
+from vehicle_supervisor import SupervisedVehicle as Vehicle
 from safety import SafetyMonitor
 from distance import DistanceEstimator
 from debug_overlay import draw_overlay
@@ -42,20 +43,14 @@ log = logging.getLogger("cakabey")
 
 
 def load_config(path="config.yaml"):
-    """Config dosyasını oku. Yoksa varsayılanlarla devam et."""
+    """Read configuration; an unreadable deployment config must stop startup."""
     if not YAML_OK:
-        log.warning("PyYAML kurulu değil. Varsayılan ayarlar kullanılacak.")
-        return None
-
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f)
-    except FileNotFoundError:
-        log.warning(f"{path} bulunamadı. Varsayılan ayarlar kullanılacak.")
-        return None
-    except Exception as e:
-        log.error(f"Config okunurken hata oluştu: {e}")
-        return None
+        raise RuntimeError("PyYAML gerekli; yapılandırma doğrulanamadı")
+    with open(path, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    if not isinstance(cfg, dict):
+        raise ValueError("Config bir YAML mapping olmalı")
+    return cfg
 
 
 def cfg_get(cfg, *keys, default=None):
@@ -73,7 +68,7 @@ def cfg_get(cfg, *keys, default=None):
     return value
 
 
-def startup(vehicle):
+def startup(vehicle, safety=None):
     """
     Araç başlatma sırası.
     Pixhawk bağlantısı yoksa: vehicle.allow_sim_fallback True ise sim modda
@@ -82,6 +77,12 @@ def startup(vehicle):
     log.info("=" * 45)
     log.info("CAKABEY AUV - BASLATMA")
     log.info("=" * 45)
+
+    if safety is not None:
+        status = safety.check(None)
+        if status["emergency"]:
+            log.critical(status["reason"])
+            return False
 
     connected = vehicle.connect()
 
@@ -97,11 +98,17 @@ def startup(vehicle):
         log.error("Başlatmada sensör verisi alınamadı.")
         return False
 
+    if safety is not None:
+        status = safety.check(sensor)
+        if status["emergency"]:
+            log.critical(status["reason"])
+            return False
+
     voltage = sensor.get("voltage", 0.0)
     heading = sensor.get("heading")
 
-    if voltage > 0 and voltage < 12.0:
-        log.error(f"Batarya kritik seviyede: {voltage:.1f}V")
+    if safety is None and (not isinstance(voltage, (int, float)) or not math.isfinite(voltage) or voltage <= 12.0):
+        log.error("Batarya kritik veya geçersiz: %r", voltage)
         return False
 
     heading_str = "—" if heading is None else f"{heading}°"
@@ -111,6 +118,16 @@ def startup(vehicle):
     if not vehicle.set_mode(mode):
         log.error(f"{mode} modu ayarlanamadı.")
         return False
+
+    if safety is not None:
+        latest = vehicle.read_sensors()
+        if latest is None:
+            log.error("Arm öncesinde sensör verisi kayboldu")
+            return False
+        status = safety.check(latest)
+        if status["emergency"]:
+            log.critical(status["reason"])
+            return False
 
     if not vehicle.arm():
         log.error("Arm başarısız.")
@@ -138,6 +155,41 @@ def default_detection(frame):
     }
 
 
+def validate_config(cfg, simulation=False):
+    if not isinstance(cfg, dict):
+        raise ValueError("Config bir mapping olmalı")
+    def finite_values(value):
+        if isinstance(value, dict):
+            for item in value.values():
+                finite_values(item)
+        elif isinstance(value, list):
+            for item in value:
+                finite_values(item)
+        elif isinstance(value, float) and not math.isfinite(value):
+            raise ValueError("Config NaN veya sonsuz değer içeremez")
+    finite_values(cfg)
+    for section in ("camera", "vehicle", "safety", "command", "pid", "fsm"):
+        if section in cfg and not isinstance(cfg[section], dict):
+            raise ValueError(f"{section} bir mapping olmalı")
+    for section, key, default in (
+        ("safety", "watchdog_timeout", 2.0),
+        ("command", "stale_after_s", 0.5),
+        ("vehicle", "heartbeat_timeout", 3.0),
+    ):
+        value = cfg_get(cfg, section, key, default=default)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+            raise ValueError(f"{section}.{key} sonlu ve pozitif olmalı")
+    for section, key, default in (("camera", "max_frame_loss", 30), ("safety", "max_sensor_loss", 10)):
+        value = cfg_get(cfg, section, key, default=default)
+        if type(value) is not int or value <= 0:
+            raise ValueError(f"{section}.{key} pozitif tam sayı olmalı")
+    if not simulation and cfg_get(cfg, "safety", "leak_pin", default=17) is None:
+        raise ValueError("Gerçek kullanımda sızıntı sensörü yapılandırılmalı")
+    for section, key, default in (("command", "enabled", True), ("safety", "leak_active_high", True)):
+        if type(cfg_get(cfg, section, key, default=default)) is not bool:
+            raise ValueError(f"{section}.{key} boolean olmalı")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Çakabey AUV Ana Kontrol")
     parser.add_argument("--source", default=None, choices=["csi", "webcam", "test"],
@@ -147,29 +199,55 @@ def main():
     parser.add_argument("--no-display", action="store_true",
                         help="Görüntü penceresini kapatır")
     parser.add_argument("--sim", action="store_true",
-                        help="Donanımsız simülasyon modu: kamera ve Pixhawk yoksa "
-                             "test moduna düşmeye izin verir. Production'da kullanma.")
+                        help="Donanımsız simülasyon: Pixhawk bağlantısı ve GPIO kullanılmaz; "
+                             "kamera test fallback açık. Production'da kullanma.")
     args = parser.parse_args()
 
     # config
     cfg = load_config(args.config)
 
+    resources = {}
+    try:
+        _run(args, cfg, resources)
+    finally:
+        # Motor stop/disarm attempts must run even after partial startup, and
+        # one failing cleanup must never prevent the remaining operations.
+        for name, methods in (
+            ("vehicle", ("stop", "disarm", "disconnect")),
+            ("safety", ("cleanup",)), ("camera", ("close",)),
+            ("telemetry", ("close",)), ("ground", ("close",)),
+            ("video_sender", ("close",)), ("command_rx", ("close",)),
+        ):
+            obj = resources.get(name)
+            if obj is not None:
+                for method in methods:
+                    try:
+                        if getattr(obj, method)() is False:
+                            log.error("%s.%s başarısız", name, method)
+                    except Exception as e:
+                        log.error("%s.%s kapanış hatası: %s", name, method, e)
+        cv2.destroyAllWindows()
+
+
+def _run(args, cfg, resources):
+    validate_config(cfg, args.sim)
     # source önce argümandan gelsin, yoksa config'den gelsin
     selected_source = args.source
     if selected_source is None:
-        selected_source = cfg_get(cfg, "camera", "source", default="test")
+        selected_source = cfg_get(cfg, "camera", "source", default="csi")
 
-    # --sim: donanımsız laptop testi için fail-open override
+    if not args.sim and selected_source == "test":
+        raise ValueError("Test kamerası için --sim gerekli")
+
+    # --sim: açıkça seçilen donanımsız test modu
     if args.sim:
         log.warning("=" * 45)
         log.warning("SIM MODE ENABLED — donanim olmadan calisiyor")
         log.warning("Production icin --sim KULLANMA. Bu mod test/gelistirme icin.")
         log.warning("=" * 45)
         sim_camera_fallback = True
-        sim_vehicle_fallback = True
     else:
-        sim_camera_fallback = cfg_get(cfg, "camera", "allow_test_fallback", default=False)
-        sim_vehicle_fallback = cfg_get(cfg, "vehicle", "allow_sim_fallback", default=False)
+        sim_camera_fallback = False
 
     # modüller
     camera = Camera(
@@ -180,6 +258,8 @@ def main():
         device_id=cfg_get(cfg, "camera", "device_id", default=0),
         allow_test_fallback=sim_camera_fallback,
     )
+
+    resources["camera"] = camera
 
     detector = PipeDetector(
         h_min=cfg_get(cfg, "detector", "h_min", default=10),
@@ -226,17 +306,26 @@ def main():
         yaw_reverse=cfg_get(cfg, "vehicle", "yaw_reverse", default=False),
         forward_reverse=cfg_get(cfg, "vehicle", "forward_reverse", default=False),
         vertical_reverse=cfg_get(cfg, "vehicle", "vertical_reverse", default=False),
-        allow_sim_fallback=sim_vehicle_fallback,
+        allow_sim_fallback=False,  # Eski YAML True olsa bile gerçek mod fail-closed.
+        simulation=args.sim,
+        supervisor_timeout=cfg_get(cfg, "safety", "watchdog_timeout", default=2.0),
+        expected_system=cfg_get(cfg, "vehicle", "expected_system", default=1),
+        expected_component=cfg_get(cfg, "vehicle", "expected_component", default=1),
+        require_signing=cfg_get(cfg, "vehicle", "require_signing", default=False),
     )
+
+    resources["vehicle"] = vehicle
 
     safety = SafetyMonitor(
         vehicle,
         warn_voltage=cfg_get(cfg, "safety", "battery_warn_voltage", default=13.0),
         critical_voltage=cfg_get(cfg, "safety", "battery_critical_voltage", default=12.0),
         watchdog_timeout=cfg_get(cfg, "safety", "watchdog_timeout", default=2.0),
-        leak_pin=cfg_get(cfg, "safety", "leak_pin", default=17),
+        leak_pin=None if args.sim else cfg_get(cfg, "safety", "leak_pin", default=17),
         leak_active_high=cfg_get(cfg, "safety", "leak_active_high", default=True),
     )
+
+    resources["safety"] = safety
 
     distance_estimator = DistanceEstimator(
         method=cfg_get(cfg, "distance", "method", default="pinhole"),
@@ -251,15 +340,21 @@ def main():
         flush_interval=cfg_get(cfg, "log", "flush_interval", default=30),
     )
 
+    resources["telemetry"] = telemetry
+
     ground = GroundStation(
-        host=cfg_get(cfg, "ground_station", "host", default="192.168.2.1"),
+        host="127.0.0.1" if args.sim else cfg_get(cfg, "ground_station", "host", default="192.168.2.1"),
+        allow_insecure=args.sim,
         port=cfg_get(cfg, "ground_station", "port", default=14651),
         enabled=cfg_get(cfg, "ground_station", "enabled", default=True),
         send_interval_s=cfg_get(cfg, "ground_station", "send_interval_s", default=0.1),
     )
 
+    resources["ground"] = ground
+
     video_sender = VideoSender(
-        host=cfg_get(cfg, "video", "host", default="192.168.2.1"),
+        host="127.0.0.1" if args.sim else cfg_get(cfg, "video", "host", default="192.168.2.1"),
+        allow_insecure=args.sim,
         port=cfg_get(cfg, "video", "port", default=14652),
         enabled=cfg_get(cfg, "video", "enabled", default=True),
         send_interval_s=cfg_get(cfg, "video", "send_interval_s", default=0.066),
@@ -267,11 +362,17 @@ def main():
         max_width=cfg_get(cfg, "video", "max_width", default=640),
     )
 
+    resources["video_sender"] = video_sender
+
     command_rx = CommandReceiver(
-        bind=cfg_get(cfg, "command", "bind", default="0.0.0.0"),
+        bind="127.0.0.1" if args.sim else cfg_get(cfg, "command", "bind", default="0.0.0.0"),
         port=cfg_get(cfg, "command", "port", default=14653),
         stale_after_s=cfg_get(cfg, "command", "stale_after_s", default=0.5),
+        allow_insecure=args.sim,
+        enabled=cfg_get(cfg, "command", "enabled", default=True),
     )
+
+    resources["command_rx"] = command_rx
 
     # PWM offset scale: vehicle.send_rc'ye verilen sayilar (-pwm_range..+pwm_range).
     # Manuel komut -1..1'den bu araliga cevriliyor.
@@ -315,19 +416,8 @@ def main():
 
     telemetry.start()
 
-    if not startup(vehicle):
+    if not startup(vehicle, safety):
         log.error("Sistem başlatılamadı. Çıkılıyor.")
-        try:
-            camera.close()
-        except Exception:
-            pass
-        telemetry.close()
-        try:
-            ground.close()
-            video_sender.close()
-            command_rx.close()
-        except Exception:
-            pass
         sys.exit(1)
 
     # Mod takibi: command receiver istek getirir, FSM'i ona gore set ederiz.
@@ -358,41 +448,21 @@ def main():
             cmd, stale = command_rx.get_command()
             requested_mode = cmd.get("mode", "auto")
 
-            # Stale link'te (laptop dustu) zorla auto'ya don. ROV otonom
-            # kalir, motor sifirlanmaz — FSM SEARCH dondurur, gorev devam.
-            if stale and current_mode != "auto":
-                log.warning("Komut linki stale. Otonoma donuluyor.")
-                current_mode = "auto"
-                fsm.set_auto()
-                yaw_pid.reset()
-            elif requested_mode != current_mode:
+            # Manual link loss cannot silently re-enable autonomous thrust.
+            # An accepted E-stop terminates this run and is independent of camera.
+            emergency_cmd = bool(cmd.get("emergency_stop", False))
+            if emergency_cmd or (stale and current_mode == "manual"):
+                log.critical("Acil dur / manuel komut bağlantısı kaybı")
+                vehicle.stop()
+                break
+
+            if requested_mode != current_mode:
                 current_mode = requested_mode
                 if current_mode == "manual":
                     fsm.set_manual()
-                    yaw_pid.reset()
-                    log.info("Mod -> MANUAL (yer istasyonu istegi)")
                 else:
                     fsm.set_auto()
-                    yaw_pid.reset()
-                    log.info("Mod -> AUTO (yer istasyonu istegi)")
-
-            emergency_cmd = bool(cmd.get("emergency_stop", False))
-
-            # ---------------- FRAME ----------------
-            frame = camera.read()
-
-            if frame is None:
-                frame_loss_count += 1
-                log.warning(f"Frame alınamadı ({frame_loss_count}/{max_frame_loss})")
-
-                if frame_loss_count >= max_frame_loss:
-                    log.error("Art arda çok fazla frame kaybı oldu. Sistem durduruluyor.")
-                    break
-
-                time.sleep(0.01)
-                continue
-
-            frame_loss_count = 0
+                yaw_pid.reset()
 
             # ---------------- GÜVENLİK ----------------
             sensor = vehicle.read_sensors()
@@ -419,12 +489,37 @@ def main():
             for warning in safety_status.get("warnings", []):
                 log.warning(warning)
 
+            if sensor is None:
+                vehicle.stop()
+                prev_yaw_cmd = prev_fwd_cmd = prev_vrt_cmd = 0
+                time.sleep(0.01)
+                continue
+
+            # ---------------- FRAME ----------------
+            frame = camera.read()
+
+            if frame is None:
+                vehicle.stop()
+                prev_yaw_cmd = prev_fwd_cmd = prev_vrt_cmd = 0
+                frame_loss_count += 1
+                log.warning(f"Frame alınamadı ({frame_loss_count}/{max_frame_loss})")
+
+                if frame_loss_count >= max_frame_loss:
+                    log.error("Art arda çok fazla frame kaybı oldu. Sistem durduruluyor.")
+                    break
+
+                time.sleep(0.01)
+                continue
+
+            frame_loss_count = 0
+
             # ---------------- BORU TESPİT ----------------
             try:
                 detection = detector.detect(frame)
             except Exception as e:
                 log.error(f"Tespit hatası: {e}")
-                detection = default_detection(frame)
+                vehicle.stop()
+                break
 
             # ---------------- ANOMALY ----------------
             anomalies = []
@@ -440,14 +535,8 @@ def main():
                 action = fsm.update(detection)
             except Exception as e:
                 log.error(f"FSM hatası: {e}")
-                action = {
-                    "state": "LOST",
-                    "search_yaw": 150,
-                    "forward_speed": 0,
-                    "yaw_enabled": False,
-                    "forward_enabled": False,
-                    "message": "FSM fallback",
-                }
+                vehicle.stop()
+                break
 
             # ---------------- KOMUT HESABI ----------------
             yaw_cmd = 0
@@ -512,6 +601,18 @@ def main():
                 prev_yaw_cmd = yaw_cmd
                 prev_fwd_cmd = fwd_cmd
                 prev_vrt_cmd = vrt_cmd
+
+            # Processing may have taken longer than the watchdog budget. Recheck
+            # the sampled data and GPIO before any motor output, and honor E-stop
+            # packets that arrived while processing the frame.
+            command_rx.poll()
+            latest_cmd, latest_stale = command_rx.get_command()
+            if (latest_cmd.get("emergency_stop", False)
+                    or (latest_stale and current_mode == "manual")
+                    or safety.check(sensor)["emergency"]):
+                log.critical("Motor çıkışı öncesi güvenlik kontrolü başarısız")
+                vehicle.stop()
+                break
 
             # ---------------- KOMUT GÖNDER ----------------
             rc_ok = vehicle.send_rc(yaw=yaw_cmd, forward=fwd_cmd, vertical=vrt_cmd)
@@ -634,47 +735,6 @@ def main():
     except KeyboardInterrupt:
         log.info("Ctrl+C algılandı. Sistem kapatılıyor...")
 
-    finally:
-        log.info("Temiz kapanış başlatıldı...")
-
-        try:
-            safety.cleanup()
-        except Exception as e:
-            log.error(f"Safety cleanup hatası: {e}")
-
-        
-        try:
-            vehicle.send_rc(yaw=0, forward=0, vertical=0)
-        except Exception:
-            pass
-
-        try:
-            vehicle.stop()
-            vehicle.disarm()
-            vehicle.disconnect()
-        except Exception as e:
-            log.error(f"Araç kapanışında hata: {e}")
-
-        try:
-            camera.close()
-        except Exception as e:
-            log.error(f"Kamera kapanışında hata: {e}")
-
-        telemetry.close()
-        try:
-            ground.close()
-        except Exception as e:
-            log.error(f"Ground station kapanis hatasi: {e}")
-        try:
-            video_sender.close()
-        except Exception as e:
-            log.error(f"Video sender kapanis hatasi: {e}")
-        try:
-            command_rx.close()
-        except Exception as e:
-            log.error(f"Command receiver kapanis hatasi: {e}")
-        cv2.destroyAllWindows()
-        log.info("Çakabey AUV kapatıldı.")
 
 
 if __name__ == "__main__":

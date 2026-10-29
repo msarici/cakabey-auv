@@ -55,14 +55,14 @@ def _dummy_frame(w=320, h=240):
 
 
 def test_disabled_does_not_open_socket():
-    vs = VideoSender(host="127.0.0.1", port=0, enabled=False)
+    vs = VideoSender(host="127.0.0.1", allow_insecure=True, port=0, enabled=False)
     assert vs._sock is None
     assert vs.send(_dummy_frame()) is False
     vs.close()
 
 
 def test_send_none_frame_returns_false():
-    vs = VideoSender(host="127.0.0.1", port=14861, send_interval_s=0.0)
+    vs = VideoSender(host="127.0.0.1", allow_insecure=True, port=14861, send_interval_s=0.0)
     try:
         assert vs.send(None) is False
     finally:
@@ -73,7 +73,7 @@ def test_send_small_frame_single_chunk():
     port = 14861
     rx = _make_receiver(port)
     try:
-        vs = VideoSender(host="127.0.0.1", port=port, send_interval_s=0.0,
+        vs = VideoSender(host="127.0.0.1", allow_insecure=True, port=port, send_interval_s=0.0,
                          max_width=320)
         ok = vs.send(_dummy_frame())
         assert ok is True
@@ -95,7 +95,7 @@ def test_frame_id_increments():
     port = 14862
     rx = _make_receiver(port)
     try:
-        vs = VideoSender(host="127.0.0.1", port=port, send_interval_s=0.0,
+        vs = VideoSender(host="127.0.0.1", allow_insecure=True, port=port, send_interval_s=0.0,
                          max_width=320)
         seen_ids = []
         for _ in range(3):
@@ -113,7 +113,7 @@ def test_rate_limit_drops_fast_sends():
     port = 14863
     rx = _make_receiver(port)
     try:
-        vs = VideoSender(host="127.0.0.1", port=port, send_interval_s=0.5,
+        vs = VideoSender(host="127.0.0.1", allow_insecure=True, port=port, send_interval_s=0.5,
                          max_width=320)
         results = [vs.send(_dummy_frame()) for _ in range(5)]
         assert results.count(True) == 1
@@ -129,7 +129,7 @@ def test_downscale_when_too_wide():
     port = 14864
     rx = _make_receiver(port)
     try:
-        vs = VideoSender(host="127.0.0.1", port=port, send_interval_s=0.0,
+        vs = VideoSender(host="127.0.0.1", allow_insecure=True, port=port, send_interval_s=0.0,
                          max_width=320, jpeg_quality=60)
         big = _dummy_frame(w=1280, h=720)
         ok = vs.send(big)
@@ -149,7 +149,7 @@ def test_downscale_when_too_wide():
 
 def test_send_does_not_raise_on_unreachable():
     """Network down: send asla raise etmemeli."""
-    vs = VideoSender(host="240.0.0.1", port=1, send_interval_s=0.0)
+    vs = VideoSender(host="240.0.0.1", auth_key=b"test-secret-"*4, port=1, send_interval_s=0.0)
     try:
         result = vs.send(_dummy_frame())
         assert result in (True, False)
@@ -158,6 +158,6 @@ def test_send_does_not_raise_on_unreachable():
 
 
 def test_close_is_idempotent():
-    vs = VideoSender(host="127.0.0.1", port=14865, enabled=False)
+    vs = VideoSender(host="127.0.0.1", allow_insecure=True, port=14865, enabled=False)
     vs.close()
     vs.close()

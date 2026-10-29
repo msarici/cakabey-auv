@@ -12,16 +12,14 @@ camera:
   max_frame_loss: 30
   allow_test_fallback: false   # gerçek kamera açılmazsa test moduna düşmesin (production)
 
-# HSV ile boru tespiti
-# Degerler ABC (abc_hsv.py, seed=42) ile optimize edildi:
-# sentetik dataset uzerinde IoU 0.9468 -> 1.0000.
-# Gercek havuz goruntuleri geldiginde ABC tekrar kosturulacak.
+# HSV başlangıç eşikleri; gerçek havuz kalibrasyonu gereklidir.
+# Güncel sentetik ölçüm: python tests/manual_anomaly_probe.py --config config.yaml
 detector:
-  h_min: 0
-  h_max: 20
-  s_min: 60
+  h_min: 5
+  h_max: 25
+  s_min: 100
   s_max: 255
-  v_min: 20
+  v_min: 80
   v_max: 255
   min_area: 500
   blur_kernel: 5
@@ -60,11 +58,14 @@ fsm:
   track_slow_factor: 0.6
 
 vehicle:
-  connection: "tcp:127.0.0.1:1"
+  connection: "/dev/ttyACM0" # Pixhawk seri portu; kurulumda doğrula
   baudrate: 115200
   heartbeat_timeout: 3.0
+  expected_system: 1
+  expected_component: 1
+  require_signing: false # local serial only; network links always require CAKABEY_MAVLINK_KEY
   flight_mode: "MANUAL"     # ArduSub: MANUAL / STABILIZE / ALT_HOLD (firmware'e göre)
-  allow_sim_fallback: true # Pixhawk yoksa sim moduna düşmesin (production = false)
+  allow_sim_fallback: false # main yalnızca --sim ile simülasyona izin verir
   # RC kanal mapping — ArduSub RCMAP_* parametrelerine uy:
   yaw_channel: 4            # RCMAP_YAW (default 4)
   forward_channel: 5        # RCMAP_FORWARD (default 5)
@@ -116,9 +117,11 @@ video:
 
 # Komut kanali (yer istasyonu -> ROV, UDP JSON)
 command:
+  enabled: true            # false: açıkça seçilen tamamen otonom kullanım
+  # İki uçta CAKABEY_COMMAND_KEY ortam değişkeni gerekli; repoya anahtar koyma.
   bind: "0.0.0.0"          # ROV'da dinleme IP'si
   port: 14653
-  stale_after_s: 0.5       # paket bundan eski -> link "dustu", auto'ya don
+  stale_after_s: 0.5       # paket bundan eski -> manuel görev durur
   manual_yaw_scale: 400    # -1..+1 komutu bu kadar PWM offset olur
   manual_fwd_scale: 400
   manual_vertical_scale: 400
@@ -129,8 +132,8 @@ command:
 # Anomaly detection (yosun, pas, catlak, kopma, eksik parca)
 anomaly:
   enabled: true
-  algae_ratio_thresh: 0.30    # ROI'de yesil piksel orani esigi
-  rust_ratio_thresh: 0.50    # ROI'de pas piksel orani esigi
-  crack_min_lines: 15         # HoughLinesP minimum cizgi sayisi
-  break_min_contour_area: 1000 # kopma icin contour minimum alan
-  missing_aspect_min: 1.5     # boru en/boy oranı bunun altıysa "eksik"
+  algae_ratio_thresh: 0.05    # ROI'de yesil piksel orani esigi
+  rust_ratio_thresh: 0.03    # ROI'de pas piksel orani esigi
+  crack_min_lines: 1         # HoughLinesP minimum cizgi sayisi
+  break_min_contour_area: 200 # kopma icin contour minimum alan
+  missing_aspect_min: 3.0     # boru en/boy oranı bunun altıysa "eksik"

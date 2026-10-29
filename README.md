@@ -94,7 +94,7 @@ An experimental classical-CV anomaly detector flags algae, rust, cracks, breaks,
 | `anomaly_detector.py` | Experimental anomaly-detection heuristics |
 | `fsm.py` | Autonomous and manual state transitions |
 | `pid_controller.py` | PID yaw control, anti-windup, output limits |
-| `vehicle.py` | Pixhawk/MAVLink integration and simulation fallback |
+| `vehicle.py` / `vehicle_supervisor.py` | Pixhawk/MAVLink integration and simulation fallback |
 | `safety.py` | Battery, watchdog, leak-input, emergency monitoring |
 | `distance.py` | Pinhole and parallel-laser distance estimation |
 | `ground_station.py` / `ground_viewer.py` | UDP/JSON telemetry send + ground-side viewer |
@@ -115,9 +115,9 @@ An experimental classical-CV anomaly detector flags algae, rust, cracks, breaks,
 
 **FSM instead of monolithic control logic.** Explicit states make target-loss behavior safe, manual/autonomous handover clean, and every transition unit-testable.
 
-**Safety before motor output.** Battery, leak, sensor-watchdog, frame-loss, and command-link checks run before any motor command in every control-loop iteration. Emergency conditions neutralize the commanded axes immediately. Stale manual links automatically fall back to autonomous mode instead of executing old commands.
+**Safety before motor output.** Battery, leak, sensor-watchdog, frame-loss, and command-link checks run before any motor command in every control-loop iteration. Emergency conditions neutralize the commanded axes immediately. A stale manual link terminates the run and requests stop/disarm. E-stop is latched until restart. Safety is checked before camera work and again before motor output. A separate process owns hardware I/O and requests stop/disarm if the controller stalls or exits; a blocked hardware driver, failed OS or broken wire still requires the autopilot failsafe.
 
-**Simulation fallback built in.** Every hardware dependency — Pixhawk, CSI camera, GPIO leak sensor — has an explicit development fallback, so the full stack runs and tests on a machine with no vehicle attached.
+**Explicit simulation.** `--sim` selects software-only vehicle simulation without opening Pixhawk or GPIO. Hardware runs never accept simulation fallback from YAML; a configured leak-sensor fault prevents arming.
 
 ---
 
@@ -140,7 +140,7 @@ git clone https://github.com/msarici/cakabey-auv.git
 cd cakabey-auv
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-sudo apt install python3-jetson-gpio   # Jetson only; leak input disabled elsewhere
+sudo apt install python3-jetson-gpio   # required for configured leak input on Jetson
 ```
 
 Without hardware:
@@ -149,15 +149,30 @@ Without hardware:
 python main.py --sim --no-display
 ```
 
-SITL (`config.yaml`):
+`--sim` is a software-only simulation; it does not connect to SITL. Hardware/SITL
+integration and autopilot failsafe behavior must be validated separately.
 
-```yaml
-vehicle:
-  connection: "udp:127.0.0.1:14551"
-  allow_sim_fallback: false
-camera:
-  source: "test"
-```
+Enabled real command, telemetry and video channels require a shared random secret of at least 32
+bytes in `CAKABEY_COMMAND_KEY` on both the vehicle and ground station. Generate it
+with `python -c "import secrets; print(secrets.token_hex(32))"`, provision it outside
+this repository, and export it into both processes. Do not commit the secret.
+HMAC authenticates these streams; it does not encrypt them. Telemetry/video use signed timestamps and a two-second freshness window (0.5s future tolerance), so the two machines must have synchronized clocks. A viewer restart can accept previously unseen captured packets within that short window. Restart viewers after a sender session changes. A signed nonce handshake
+needs a few send/poll cycles; no shared wall clock is required. The receiver locks
+the sender session until restart; restart both ends after E-stop or sender restart.
+The nonce lease bounds acceptance of delayed unseen packets to two seconds.
+
+For explicitly autonomous-only hardware use, set `command.enabled: false`. If no shared key is provisioned, also disable `ground_station.enabled` and `video.enabled`.
+For local simulation with the viewer, use
+`python video_viewer.py --sim --rov-ip 127.0.0.1`. Telemetry viewer: `python ground_viewer.py --sim`. Simulation stream destinations are forced to loopback. Install `pygame` for the viewer/manual input.
+Unsigned simulation commands are restricted by the application to loopback.
+
+Network MAVLink connections require a separate `CAKABEY_MAVLINK_KEY`: exactly
+64 hexadecimal characters representing a 32-byte secret, also provisioned on the
+autopilot using its supported configuration process. No key is pushed to hardware
+by this application. MAVLink2 signing rejects unsigned traffic; local serial is
+physically trusted by default, or set `vehicle.require_signing: true` to require
+signing there too. Default expected autopilot IDs are system 1/component 1; set
+`expected_system`/`expected_component` for your installation.
 
 Physical vehicle:
 
@@ -174,6 +189,7 @@ camera:
 ## Tests
 
 ```bash
+pip install pygame  # include manual-input tests
 python -m pytest tests/ -v
 ```
 
@@ -196,8 +212,9 @@ Covers PID behavior (saturation, anti-windup, reset, invalid parameters), FSM tr
 
 * PID gains and HSV thresholds require retuning against the physical vehicle and water conditions before operation
 * The anomaly detector is heuristic, not a trained model
-* UDP telemetry/command transport assumes a controlled tethered network — no authentication or encryption
-* Single-process runtime; may be split into services in a future revision
+* Command/video/telemetry are authenticated, not encrypted; timestamp-based stream freshness has the bounded replay window described above
+* Process supervision covers controller stalls/death, not OS failure, a blocked hardware driver or a broken wire
+* Synthetic anomaly tests do not establish arbitrary real-water performance; no physical validation was performed in the software audit
 
 ---
 
@@ -214,3 +231,7 @@ Available for freelance work: ArduPilot/ArduSub · MAVLink · NVIDIA Jetson · O
 ## License
 
 [MIT](LICENSE)
+
+## Security and validation review
+
+See [SECURITY_REVIEW.md](SECURITY_REVIEW.md) for the 2026-10-29 source audit, fixes, actual test results, open findings, and deployment constraints. Configured end-to-end anomaly tests pass on the documented synthetic cases; these do not establish field accuracy or hardware safety.

@@ -4,16 +4,16 @@ safety.py — Güvenlik Kontrol Modülü
 
 Batarya kritik seviye, watchdog timeout ve sızıntı kontrolü.
 
-Sızıntı kontrolü şu an PASIF (placeholder).
-Donanım entegrasyonu için aşağıdaki TODO'ya bakın.
+Yapılandırılmış sızıntı sensörü arızaları acil durum olarak kilitlenir.
 """
 
+import math
 import time
 
 try:
     import Jetson.GPIO as GPIO
     GPIO_OK = True
-except ImportError:
+except (ImportError, RuntimeError, OSError):
     GPIO_OK = False
 
 
@@ -27,6 +27,13 @@ class SafetyMonitor:
         leak_pin=None,
         leak_active_high=True,
     ):
+        warn_voltage, critical_voltage, watchdog_timeout = map(
+            float, (warn_voltage, critical_voltage, watchdog_timeout))
+        if not all(math.isfinite(v) and v > 0 for v in
+                   (warn_voltage, critical_voltage, watchdog_timeout)):
+            raise ValueError("Safety thresholds must be positive and finite")
+        if critical_voltage > warn_voltage:
+            raise ValueError("critical_voltage must not exceed warn_voltage")
         self.vehicle = vehicle
         self.warn_voltage = warn_voltage
         self.critical_voltage = critical_voltage
@@ -34,6 +41,8 @@ class SafetyMonitor:
         self.leak_pin = leak_pin
         self.leak_active_high = leak_active_high
 
+        self._leak_fault = None
+        self._leak_setup_attempted = False
         self._leak_initialized = False
         self._leak_warned_once = False
 
@@ -43,7 +52,7 @@ class SafetyMonitor:
         """
         Sızıntı sensörü için Jetson GPIO başlatma.
 
-        Donanım yoksa veya pin verilmemişse pasif placeholder olarak çalışır.
+        Pin verilmemişse kontrol devre dışıdır; yapılandırılmış pin arızası kilitlenir.
         Jetson üzerinde gerçek sızıntı sensörü bağlandığında BCM pin numarası
         config.yaml > safety.leak_pin altında verilmeli.
         """
@@ -51,17 +60,18 @@ class SafetyMonitor:
             return
 
         if not GPIO_OK:
-            print("[safety] Jetson.GPIO modülü yok. Sızıntı sensörü pasif.")
+            self._leak_fault = "Sızıntı sensörü arızası: Jetson.GPIO kullanılamıyor"
             return
 
         try:
             GPIO.setmode(GPIO.BCM)
             pull = GPIO.PUD_DOWN if self.leak_active_high else GPIO.PUD_UP
+            self._leak_setup_attempted = True
             GPIO.setup(self.leak_pin, GPIO.IN, pull_up_down=pull)
             self._leak_initialized = True
             print(f"[safety] Sızıntı sensörü pin {self.leak_pin} aktif.")
         except Exception as e:
-            print(f"[safety] Sızıntı sensörü başlatılamadı: {e}")
+            self._leak_fault = f"Sızıntı sensörü başlatma arızası: {e}"
 
     def check(self, sensor_data):
         """
@@ -78,7 +88,13 @@ class SafetyMonitor:
         }
 
         # Sızıntı önce kontrol — sensor None olsa bile çalışır.
-        if self._check_leak():
+        leak = self._check_leak()
+        if self._leak_fault:
+            status["emergency"] = True
+            status["reason"] = self._leak_fault
+            return status
+
+        if leak:
             status["emergency"] = True
             status["reason"] = "Su kaçağı algılandı"
             return status
@@ -92,6 +108,26 @@ class SafetyMonitor:
 
         voltage = sensor_data.get("voltage", 0.0)
         timestamp = sensor_data.get("timestamp")
+
+        if not isinstance(voltage, (int, float)) or not math.isfinite(voltage) or voltage <= 0:
+            status["emergency"] = True
+            status["reason"] = "Batarya verisi geçersiz"
+            return status
+
+        now = time.monotonic()
+        for name, stamp in (("Sensör", timestamp),
+                            ("Heartbeat", sensor_data.get("heartbeat_timestamp"))):
+            if stamp is None:
+                continue  # Preserve legacy timestamp-less monitor/test API.
+            if (not isinstance(stamp, (int, float)) or not math.isfinite(stamp)
+                    or stamp > now):
+                status["emergency"] = True
+                status["reason"] = f"{name} zaman damgası geçersiz"
+                return status
+            if name == "Heartbeat" and now - stamp > self.watchdog_timeout:
+                status["emergency"] = True
+                status["reason"] = "Heartbeat zaman aşımı"
+                return status
 
         # Kritik batarya
         if voltage > 0 and voltage <= self.critical_voltage:
@@ -116,7 +152,7 @@ class SafetyMonitor:
         """
         Sızıntı sensörü okuma.
 
-        Aktif değilse her zaman False döner (güvenli varsayım: sızıntı yok).
+        Yapılandırılmamışsa False döner; okuma arızası kilitli acil durumdur.
         Aktif ise GPIO seviyesini okur:
         - leak_active_high=True: HIGH = sızıntı
         - leak_active_high=False: LOW = sızıntı
@@ -126,12 +162,14 @@ class SafetyMonitor:
 
         try:
             level = GPIO.input(self.leak_pin)
+            if level not in (GPIO.HIGH, GPIO.LOW):
+                raise ValueError(f"Geçersiz GPIO seviyesi: {level!r}")
             if self.leak_active_high:
                 return level == GPIO.HIGH
             else:
                 return level == GPIO.LOW
         except Exception as e:
-            print(f"[safety] Sızıntı okuma hatası: {e}")
+            self._leak_fault = f"Sızıntı sensörü okuma arızası: {e}"
             return False
 
     def cleanup(self):
@@ -139,7 +177,7 @@ class SafetyMonitor:
         GPIO kaynaklarını serbest bırak.
         Program kapanışında çağrılmalı.
         """
-        if self._leak_initialized and GPIO_OK:
+        if self._leak_setup_attempted and GPIO_OK:
             try:
                 GPIO.cleanup(self.leak_pin)
             except Exception:
