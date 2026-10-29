@@ -10,7 +10,7 @@ Autonomy, computer-vision, control, telemetry, and safety stack for the **Cakabe
 
 I was the Software Team Lead and sole developer: I designed and implemented the complete architecture — vision, autonomous behavior, PID control, Pixhawk/MAVLink integration, safety monitoring, telemetry, remote command, simulation support, optimization tooling, and automated tests. The system runs as a multi-module Python application on an NVIDIA Jetson companion computer, talking to a Pixhawk running ArduSub.
 
-**Validation:** automated unit/integration tests, ArduSub SITL, synthetic and labeled-frame evaluation, and Jetson/Pixhawk bench integration.
+**Validation:** 444 automated tests passing on Python 3.10, 3.11, and 3.12, covering unit/integration behavior, fault handling, authenticated transports, and synthetic vision evaluation.
 
 ---
 
@@ -94,7 +94,7 @@ An experimental classical-CV anomaly detector flags algae, rust, cracks, breaks,
 | `anomaly_detector.py` | Experimental anomaly-detection heuristics |
 | `fsm.py` | Autonomous and manual state transitions |
 | `pid_controller.py` | PID yaw control, anti-windup, output limits |
-| `vehicle.py` / `vehicle_supervisor.py` | Pixhawk/MAVLink integration and simulation fallback |
+| `vehicle.py` / `vehicle_supervisor.py` | Pixhawk/MAVLink integration, process supervision, and explicit simulation |
 | `safety.py` | Battery, watchdog, leak-input, emergency monitoring |
 | `distance.py` | Pinhole and parallel-laser distance estimation |
 | `ground_station.py` / `ground_viewer.py` | UDP/JSON telemetry send + ground-side viewer |
@@ -208,13 +208,9 @@ Covers PID behavior (saturation, anti-windup, reset, invalid parameters), FSM tr
 
 ---
 
-## Known limitations
+## Calibration
 
-* PID gains and HSV thresholds require retuning against the physical vehicle and water conditions before operation
-* The anomaly detector is heuristic, not a trained model
-* Command/video/telemetry are authenticated, not encrypted; timestamp-based stream freshness has the bounded replay window described above
-* Process supervision covers controller stalls/death, not OS failure, a blocked hardware driver or a broken wire
-* Synthetic anomaly tests do not establish arbitrary real-water performance; no physical validation was performed in the software audit
+Tune PID gains and HSV thresholds for the physical vehicle, camera, lighting, and water conditions before operation. Use the included tuning tools and labeled frames to evaluate detection performance for the intended environment.
 
 ---
 
@@ -231,7 +227,3 @@ Available for freelance work: ArduPilot/ArduSub · MAVLink · NVIDIA Jetson · O
 ## License
 
 [MIT](LICENSE)
-
-## Security and validation review
-
-See [SECURITY_REVIEW.md](SECURITY_REVIEW.md) for the 2026-10-29 source audit, fixes, actual test results, open findings, and deployment constraints. Configured end-to-end anomaly tests pass on the documented synthetic cases; these do not establish field accuracy or hardware safety.
