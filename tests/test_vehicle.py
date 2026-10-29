@@ -93,7 +93,7 @@ def test_pwm_limit_clamps_to_range():
 
 def test_send_rc_sim_caches_all_three_axes():
     """Sim modunda send_rc last_rc'yi yaw+forward+vertical icin gunceller."""
-    v = Vehicle()
+    v = Vehicle(simulation=True)
     assert v.send_rc(yaw=100, forward=-50, vertical=200) is True
     assert v.last_rc["yaw"] == 100
     assert v.last_rc["forward"] == -50
@@ -101,7 +101,7 @@ def test_send_rc_sim_caches_all_three_axes():
 
 
 def test_send_rc_reverse_negates_offset():
-    v = Vehicle(yaw_reverse=True, forward_reverse=False, vertical_reverse=True)
+    v = Vehicle(simulation=True, yaw_reverse=True, forward_reverse=False, vertical_reverse=True)
     v.send_rc(yaw=100, forward=100, vertical=100)
     assert v.last_rc["yaw"] == -100
     assert v.last_rc["forward"] == 100
@@ -109,7 +109,7 @@ def test_send_rc_reverse_negates_offset():
 
 
 def test_stop_zeroes_all_axes():
-    v = Vehicle()
+    v = Vehicle(simulation=True)
     v.send_rc(yaw=200, forward=200, vertical=200)
     v.stop()
     assert v.last_rc["yaw"] == 0
@@ -120,7 +120,7 @@ def test_stop_zeroes_all_axes():
 def test_sim_read_sensors_returns_monotonic_timestamp_and_none_heading():
     """Sim modunda heading None (kuzey=0 ile karıştırılmasın),
     timestamp monotonic (wall-clock kaymalarına immün)."""
-    v = Vehicle()
+    v = Vehicle(simulation=True)
     sensor = v.read_sensors()
     assert sensor is not None
     assert sensor["heading"] is None

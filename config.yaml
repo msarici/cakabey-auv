@@ -14,7 +14,9 @@ camera:
 
 # HSV ile boru tespiti
 # Degerler ABC (abc_hsv.py, seed=42) ile optimize edildi:
-# sentetik dataset uzerinde IoU 0.9468 -> 1.0000.
+# Geçmiş optimizasyon sonucu güncel doğrulama değildir;
+# 2026-10-29 mevcut config IoU: 0.709976 (OpenCV 5, seed=42).
+# Tekrar ölç: python tests/manual_anomaly_probe.py --config config.yaml
 # Gercek havuz goruntuleri geldiginde ABC tekrar kosturulacak.
 detector:
   h_min: 0
@@ -60,11 +62,11 @@ fsm:
   track_slow_factor: 0.6
 
 vehicle:
-  connection: "tcp:127.0.0.1:1"
+  connection: "/dev/ttyACM0" # Pixhawk seri portu; kurulumda doğrula
   baudrate: 115200
   heartbeat_timeout: 3.0
   flight_mode: "MANUAL"     # ArduSub: MANUAL / STABILIZE / ALT_HOLD (firmware'e göre)
-  allow_sim_fallback: true # Pixhawk yoksa sim moduna düşmesin (production = false)
+  allow_sim_fallback: false # main yalnızca --sim ile simülasyona izin verir
   # RC kanal mapping — ArduSub RCMAP_* parametrelerine uy:
   yaw_channel: 4            # RCMAP_YAW (default 4)
   forward_channel: 5        # RCMAP_FORWARD (default 5)
@@ -116,9 +118,11 @@ video:
 
 # Komut kanali (yer istasyonu -> ROV, UDP JSON)
 command:
+  enabled: true            # false: açıkça seçilen tamamen otonom kullanım
+  # İki uçta CAKABEY_COMMAND_KEY ortam değişkeni gerekli; repoya anahtar koyma.
   bind: "0.0.0.0"          # ROV'da dinleme IP'si
   port: 14653
-  stale_after_s: 0.5       # paket bundan eski -> link "dustu", auto'ya don
+  stale_after_s: 0.5       # paket bundan eski -> manuel görev durur
   manual_yaw_scale: 400    # -1..+1 komutu bu kadar PWM offset olur
   manual_fwd_scale: 400
   manual_vertical_scale: 400

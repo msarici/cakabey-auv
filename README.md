@@ -115,9 +115,9 @@ An experimental classical-CV anomaly detector flags algae, rust, cracks, breaks,
 
 **FSM instead of monolithic control logic.** Explicit states make target-loss behavior safe, manual/autonomous handover clean, and every transition unit-testable.
 
-**Safety before motor output.** Battery, leak, sensor-watchdog, frame-loss, and command-link checks run before any motor command in every control-loop iteration. Emergency conditions neutralize the commanded axes immediately. Stale manual links automatically fall back to autonomous mode instead of executing old commands.
+**Safety before motor output.** Battery, leak, sensor-watchdog, frame-loss, and command-link checks run before any motor command in every control-loop iteration. Emergency conditions neutralize the commanded axes immediately. A stale manual link terminates the run and requests stop/disarm. E-stop is latched until restart. Safety is checked before camera work and again before motor output; a blocked process still requires an independent autopilot failsafe.
 
-**Simulation fallback built in.** Every hardware dependency — Pixhawk, CSI camera, GPIO leak sensor — has an explicit development fallback, so the full stack runs and tests on a machine with no vehicle attached.
+**Explicit simulation.** `--sim` selects software-only vehicle simulation without opening Pixhawk or GPIO. Hardware runs never accept simulation fallback from YAML; a configured leak-sensor fault prevents arming.
 
 ---
 
@@ -140,7 +140,7 @@ git clone https://github.com/msarici/cakabey-auv.git
 cd cakabey-auv
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-sudo apt install python3-jetson-gpio   # Jetson only; leak input disabled elsewhere
+sudo apt install python3-jetson-gpio   # required for configured leak input on Jetson
 ```
 
 Without hardware:
@@ -149,15 +149,23 @@ Without hardware:
 python main.py --sim --no-display
 ```
 
-SITL (`config.yaml`):
+`--sim` is a software-only simulation; it does not connect to SITL. Hardware/SITL
+integration and autopilot failsafe behavior must be validated separately.
 
-```yaml
-vehicle:
-  connection: "udp:127.0.0.1:14551"
-  allow_sim_fallback: false
-camera:
-  source: "test"
-```
+The enabled real command channel requires a shared random secret of at least 32
+bytes in `CAKABEY_COMMAND_KEY` on both the vehicle and ground station. Generate it
+with `python -c "import secrets; print(secrets.token_hex(32))"`, provision it outside
+this repository, and export it into both processes. Do not commit the secret.
+HMAC authenticates commands; it does not encrypt them. A signed nonce handshake
+needs a few send/poll cycles; no shared wall clock is required. The receiver locks
+the sender session until restart; restart both ends after E-stop or sender restart.
+The nonce lease bounds acceptance of delayed unseen packets to two seconds.
+
+For explicitly autonomous-only hardware use, set `command.enabled: false`.
+For local simulation with the viewer, use
+`python video_viewer.py --sim --rov-ip 127.0.0.1` and set `video.host` to
+`127.0.0.1` in your simulation config. Install `pygame` for the viewer/manual input.
+Unsigned simulation commands are restricted by the application to loopback.
 
 Physical vehicle:
 
@@ -174,6 +182,7 @@ camera:
 ## Tests
 
 ```bash
+pip install pygame  # include manual-input tests
 python -m pytest tests/ -v
 ```
 
@@ -214,3 +223,7 @@ Available for freelance work: ArduPilot/ArduSub · MAVLink · NVIDIA Jetson · O
 ## License
 
 [MIT](LICENSE)
+
+## Security and validation review
+
+See [SECURITY_REVIEW.md](SECURITY_REVIEW.md) for the 2026-10-29 source audit, fixes, actual test results, open findings, and deployment constraints. Passing unit tests does not establish end-to-end anomaly accuracy or hardware safety.

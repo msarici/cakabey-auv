@@ -21,6 +21,10 @@ class ABCOptimizer:
             Bu sayede ABC asla referans seviyenin altına düşmez; ya yakalar
             ya iyileştirir. None ise tamamen rasgele başlar.
         """
+        if isinstance(colony_size, bool) or not isinstance(colony_size, int) or colony_size < 2:
+            raise ValueError("colony_size must be an integer >= 2")
+        if not bounds:
+            raise ValueError("bounds must contain at least one dimension")
         self.bounds = bounds
         self.fitness_fn = fitness_fn
         self.colony_size = colony_size

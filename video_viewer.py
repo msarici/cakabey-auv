@@ -28,7 +28,10 @@ import time
 
 import numpy as np
 import cv2
-import pygame
+try:
+    import pygame
+except ImportError:
+    pygame = None
 
 from manual_input import ManualInput
 from command_link import CommandSender
@@ -40,12 +43,54 @@ HEADER_SIZE = HEADER.size
 # Eski/disinda frame'ler atilir. Pratikte 2-3 frame yeter.
 REASSEMBLY_BUFFER = 4
 RECV_BUFFER_BYTES = 1 << 20  # 1 MB OS recv buffer
+MAX_PACKETS_PER_POLL = 128
+MAX_DECODES_PER_POLL = 4
+MAX_CHUNKS = 64
+MAX_CHUNK_BYTES = 60000
+MAX_FRAME_BYTES = 4 << 20
+FRAME_TIMEOUT = 1.0
+MAX_IMAGE_PIXELS = 3840 * 2160
+
+
+def _jpeg_dimensions_allowed(blob):
+    """Check JPEG SOF dimensions before OpenCV allocates the decoded image."""
+    if not blob.startswith(b"\xff\xd8"):
+        return False
+    pos = 2
+    sof = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
+           0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
+    while pos < len(blob):
+        if blob[pos] != 0xFF:
+            return False
+        while pos < len(blob) and blob[pos] == 0xFF:
+            pos += 1
+        if pos >= len(blob):
+            return False
+        marker = blob[pos]
+        pos += 1
+        if marker in (0xD9, 0xDA):
+            return False
+        if pos + 2 > len(blob):
+            return False
+        length = int.from_bytes(blob[pos:pos + 2], "big")
+        if length < 2 or pos + length > len(blob):
+            return False
+        if marker in sof:
+            if length < 8:
+                return False
+            height = int.from_bytes(blob[pos + 3:pos + 5], "big")
+            width = int.from_bytes(blob[pos + 5:pos + 7], "big")
+            return 0 < width <= 4096 and 0 < height <= 4096 and width * height <= MAX_IMAGE_PIXELS
+        pos += length
+    return False
 
 
 class FrameReceiver:
-    def __init__(self, bind="0.0.0.0", port=14652):
+    def __init__(self, bind="0.0.0.0", port=14652, source_host=None):
         self.bind = bind
         self.port = int(port)
+        self.source_host = socket.gethostbyname(source_host) if source_host is not None else None
+        self._last_complete_t = None
 
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -65,73 +110,78 @@ class FrameReceiver:
         self._decode_errors = 0
 
     def poll(self):
-        """Non-blocking: kuyruktaki tum paketleri ic, hazir frame varsa
-        bgr numpy array dondur. Yoksa None."""
+        """Bound processing so video traffic cannot starve control/UI events."""
         latest_frame = None
+        decodes = 0
+        now = time.monotonic()
+        # Allow a sender restarted at frame 0 after an idle interval.
+        if self._last_complete_t is not None and now - self._last_complete_t > FRAME_TIMEOUT:
+            self._last_complete_id = -1
+            self._last_complete_t = None
+        for fid in list(self._partial):
+            if now - self._partial[fid]["ts"] > FRAME_TIMEOUT:
+                self._partial.pop(fid)
+                self._frames_dropped += 1
 
-        while True:
+        for _ in range(MAX_PACKETS_PER_POLL):
             try:
-                data, _addr = self._sock.recvfrom(65535)
-            except BlockingIOError:
+                data, addr = self._sock.recvfrom(65535)
+            except (BlockingIOError, OSError):
                 break
-            except OSError:
-                break
-
-            if len(data) < HEADER_SIZE:
+            if self.source_host is not None and addr[0] != self.source_host:
                 continue
-
+            if len(data) <= HEADER_SIZE or len(data) > HEADER_SIZE + MAX_CHUNK_BYTES:
+                continue
             fid, cid, total = HEADER.unpack(data[:HEADER_SIZE])
-            payload = data[HEADER_SIZE:]
-
-            # Yeni frame_id geldi, eskilerini temizle
-            if fid <= self._last_complete_id and self._last_complete_id - fid > REASSEMBLY_BUFFER:
-                # Frame_id wraparound veya gercekten eski; goz ardi et
+            if not 1 <= total <= MAX_CHUNKS or cid >= total:
                 continue
-
+            if self._last_complete_id >= 0:
+                delta = (fid - self._last_complete_id) & 0xFFFFFFFF
+                if not 0 < delta < 0x80000000:
+                    continue
+            payload = data[HEADER_SIZE:]
             entry = self._partial.get(fid)
             if entry is None:
-                entry = {"total": total, "chunks": {}, "ts": time.monotonic()}
+                if len(self._partial) >= REASSEMBLY_BUFFER:
+                    oldest = min(self._partial, key=lambda key: self._partial[key]["ts"])
+                    self._partial.pop(oldest)
+                    self._frames_dropped += 1
+                entry = {"total": total, "chunks": {}, "ts": now, "bytes": 0}
                 self._partial[fid] = entry
             elif entry["total"] != total:
-                # Bozuk paket: header'da farkli total. Reset.
-                entry["total"] = total
-                entry["chunks"] = {}
-
+                continue
+            if cid in entry["chunks"]:
+                continue
+            entry["bytes"] += len(payload)
+            if entry["bytes"] > MAX_FRAME_BYTES:
+                self._partial.pop(fid)
+                self._frames_dropped += 1
+                continue
             entry["chunks"][cid] = payload
-
-            if len(entry["chunks"]) == entry["total"]:
-                # Tamamlandi. Sirali birlestir.
-                try:
-                    blob = b"".join(entry["chunks"][i] for i in range(entry["total"]))
-                except KeyError:
-                    # Eksik chunk (race), drop
-                    self._frames_dropped += 1
-                    self._partial.pop(fid, None)
-                    continue
-
-                self._partial.pop(fid, None)
-                self._last_complete_id = max(self._last_complete_id, fid)
-                self._frames_received += 1
-
-                # Decode
-                try:
-                    arr = np.frombuffer(blob, dtype=np.uint8)
-                    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-                    if img is not None:
-                        latest_frame = img
-                        self._frames_decoded += 1
-                    else:
-                        self._decode_errors += 1
-                except Exception:
-                    self._decode_errors += 1
-
-        # Eski partial'lari sil (timeout)
-        now = time.monotonic()
-        stale = [k for k, v in self._partial.items() if now - v["ts"] > 1.0]
-        for k in stale:
-            self._partial.pop(k, None)
-            self._frames_dropped += 1
-
+            if len(entry["chunks"]) != total:
+                continue
+            blob = b"".join(entry["chunks"][i] for i in range(total))
+            self._partial.pop(fid)
+            if not _jpeg_dimensions_allowed(blob):
+                self._decode_errors += 1
+                continue
+            decodes += 1
+            try:
+                img = cv2.imdecode(np.frombuffer(blob, dtype=np.uint8), cv2.IMREAD_COLOR)
+            except Exception:
+                img = None
+            if img is None:
+                self._decode_errors += 1
+                if decodes >= MAX_DECODES_PER_POLL:
+                    break
+                continue
+            latest_frame = img
+            self._last_complete_id = fid
+            self._last_complete_t = now
+            self._frames_received += 1
+            self._frames_decoded += 1
+            if decodes >= MAX_DECODES_PER_POLL:
+                break
         return latest_frame
 
     def stats(self):
@@ -193,10 +243,16 @@ def main():
     parser.add_argument("--width", type=int, default=960,
                         help="Pencere genisligi (frame yoksa baslangic)")
     parser.add_argument("--height", type=int, default=540)
+    parser.add_argument("--sim", action="store_true",
+                        help="Yerel donanımsız test; kimliksiz komut yalnızca loopback")
     parser.add_argument("--no-cmd", action="store_true",
                         help="Komut gonderme; sadece video izle.")
     args = parser.parse_args()
+    if args.sim and args.rov_ip != "127.0.0.1":
+        parser.error("--sim için --rov-ip 127.0.0.1 gerekli")
 
+    if pygame is None:
+        raise SystemExit("pygame gerekli: pip install pygame")
     pygame.init()
     pygame.display.set_caption("Cakabey AUV — Yer Istasyonu")
     screen = pygame.display.set_mode((args.width, args.height), pygame.RESIZABLE)
@@ -209,10 +265,10 @@ def main():
         sys.exit(1)
 
     sender = None if args.no_cmd else CommandSender(
-        host=args.rov_ip, port=args.cmd_port, send_interval_s=0.02
+        host=args.rov_ip, port=args.cmd_port, allow_insecure=args.sim, send_interval_s=0.02
     )
 
-    rx = FrameReceiver(bind=args.bind, port=args.video_port)
+    rx = FrameReceiver(bind=args.bind, port=args.video_port, source_host=args.rov_ip)
 
     print(f"[viewer] Video dinleniyor {args.bind}:{args.video_port}")
     if sender:

@@ -16,4 +16,4 @@ pytest>=7.4.0
 
 # NOT: Jetson.GPIO sadece Jetson donanımında gerekli, pip ile değil
 # sistem paketinden gelir (sudo apt install python3-jetson-gpio).
-# Geliştirme makinelerinde import hatası sızıntı sensörünü pasif eder.
+# Yapılandırılmış sensörde GPIO hatası acil durumdur; donanımsız test için --sim.

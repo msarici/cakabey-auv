@@ -32,7 +32,7 @@ class Camera:
 
     def open(self):
         if self.source == "csi":
-            self.cap = cv2.VideoCapture(0)
+            self.cap = cv2.VideoCapture(self._gstreamer_pipeline(), cv2.CAP_GSTREAMER)
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
 
@@ -53,6 +53,8 @@ class Camera:
             return False
 
         if self.cap is None or not self.cap.isOpened():
+            if self.cap is not None:
+                self.cap.release()
             if self.allow_test_fallback:
                 print(f"[kamera] {self.source} açılamadı. Test moduna geçiliyor (fallback aktif).")
                 self.source = "test"
@@ -99,12 +101,12 @@ class Camera:
 
     def _gstreamer_pipeline(self):
         return (
-            f"nvarguscamerasrc ! "
+            f"nvarguscamerasrc sensor-id={self.device_id} ! "
             f"video/x-raw(memory:NVMM), width=1280, height=720, "
-            f"format=NV12, framerate=60/1 ! "
+            f"format=NV12, framerate={self.fps}/1 ! "
             f"nvvidconv ! video/x-raw, width={self.width}, height={self.height}, format=BGRx ! "
             f"videoconvert ! video/x-raw, format=BGR ! "
-            f"appsink drop=1"
+            f"appsink max-buffers=1 drop=true sync=false"
         )
 
     def _generate_test_frame(self):

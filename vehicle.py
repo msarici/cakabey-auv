@@ -3,7 +3,7 @@ vehicle.py — Araç Arayüzü
 Çakabey AUV | TEKNOCAK 2026
 
 Gerçek Pixhawk varsa MAVLink ile konuşur.
-Yoksa simülasyon modunda çalışır.
+Simülasyon yalnızca açıkça seçilirse kullanılır.
 
 read_sensors için cache pattern:
 MAVLink mesajları her frame gelmeyebilir (blocking=False).
@@ -11,6 +11,7 @@ Son geçerli değer saklanır, yeni mesaj gelene kadar cache'den döner.
 Bu sayede tek bir frame kaybı sahte sıfır değer üretmez.
 """
 
+import math
 import time
 
 try:
@@ -26,7 +27,7 @@ class Vehicle:
                  vertical_channel=3,
                  pwm_base=1500, pwm_min=1100, pwm_max=1900,
                  yaw_reverse=False, forward_reverse=False, vertical_reverse=False,
-                 allow_sim_fallback=False):
+                 allow_sim_fallback=False, simulation=False):
         """
         flight_mode: ArduSub için tipik seçenekler MANUAL / STABILIZE / ALT_HOLD.
         yaw_channel/forward_channel/vertical_channel: ArduSub RCMAP_* parametreleri ile
@@ -35,6 +36,7 @@ class Vehicle:
         *_reverse: kanal yonu ters cikiyorsa True yap — PWM offset'ini negate eder.
             Suya girmeden once mutlaka tek tek dogrula (havada test, her motor sirayla).
         pwm_base/min/max: motor PWM aralığı (1100-1900 us, neutral 1500).
+        simulation: True ise Pixhawk bağlantısı denenmez (donanımsız --sim).
         allow_sim_fallback: Pixhawk bağlantısı kurulamazsa sim moduna geçmesine izin
             verir. Production'da False (görev güvenliği). Geliştirme'de True.
         """
@@ -62,9 +64,12 @@ class Vehicle:
                 f"min={pwm_min} base={pwm_base} max={pwm_max}"
             )
 
+        if not math.isfinite(float(heartbeat_timeout)) or float(heartbeat_timeout) <= 0:
+            raise ValueError("heartbeat_timeout must be positive and finite")
+
         self.connection = connection
         self.baudrate = baudrate
-        self.heartbeat_timeout = heartbeat_timeout
+        self.heartbeat_timeout = float(heartbeat_timeout)
         self.flight_mode = flight_mode
         self.yaw_channel = yaw_channel
         self.forward_channel = forward_channel
@@ -77,8 +82,9 @@ class Vehicle:
         self.vertical_reverse = bool(vertical_reverse)
         self.allow_sim_fallback = allow_sim_fallback
 
+        self.simulation = bool(simulation)
         self.master = None
-        self.sim_mode = True
+        self.sim_mode = self.simulation or bool(allow_sim_fallback)
         self.armed = False
         self.last_rc = {"yaw": 0, "forward": 0, "vertical": 0}
         self._sim_voltage = 16.0
@@ -88,16 +94,41 @@ class Vehicle:
         self._cached_heading = None
         self._last_voltage_time = None
         self._last_heading_time = None
+        self._target = None
+        self._last_heartbeat_time = None
+        self._heartbeat_sequence = 0
+        self._custom_mode = None
 
     def connect(self):
-        if not MAVLINK_OK:
-            print("[vehicle] pymavlink yok. Simülasyon modunda devam.")
+        if self.simulation:
             self.sim_mode = True
+            return True
+
+        if not MAVLINK_OK:
+            print("[vehicle] pymavlink yok. Bağlantı kurulamadı.")
+            self.sim_mode = bool(self.allow_sim_fallback)
             return False
 
+        # A reconnect must not reuse old telemetry or arming observations.
+        self.disconnect()
+        self._cached_voltage = self._cached_heading = None
+        self._last_voltage_time = self._last_heading_time = None
+        self._target = None
+        self._last_heartbeat_time = None
+        self._heartbeat_sequence = 0
+        self._custom_mode = None
+        self.armed = False
         try:
             self.master = mavutil.mavlink_connection(self.connection, baud=self.baudrate)
-            self.master.wait_heartbeat(timeout=self.heartbeat_timeout)
+            heartbeat = self.master.wait_heartbeat(timeout=self.heartbeat_timeout)
+            if heartbeat is None:
+                raise TimeoutError("Pixhawk heartbeat alınamadı")
+            if (heartbeat.autopilot == mavutil.mavlink.MAV_AUTOPILOT_INVALID
+                    or heartbeat.type == mavutil.mavlink.MAV_TYPE_GCS):
+                raise ValueError("Heartbeat does not identify an autopilot")
+            self._target = (heartbeat.get_srcSystem(), heartbeat.get_srcComponent())
+            self.master.target_system, self.master.target_component = self._target
+            self._handle_message(heartbeat)
             self.sim_mode = False
             print("[vehicle] Pixhawk bağlantısı kuruldu.")
             # SYS_STATUS warm-up: heartbeat geldi ama SYS_STATUS henüz queue'ya
@@ -107,8 +138,8 @@ class Vehicle:
             return True
         except Exception as e:
             print(f"[vehicle] Bağlantı kurulamadı: {e}")
-            self.master = None
-            self.sim_mode = True
+            self.disconnect()
+            self.sim_mode = bool(self.allow_sim_fallback)
             return False
 
     def _warm_up_sensors(self, timeout=2.0):
@@ -133,7 +164,7 @@ class Vehicle:
                 return False
 
             self.master.set_mode(mode_id)
-            return True
+            return self._wait_for_heartbeat_state(lambda: self._custom_mode == mode_id)
         except Exception as e:
             print(f"[vehicle] Mod ayarlanamadı: {e}")
             return False
@@ -146,8 +177,7 @@ class Vehicle:
 
         try:
             self.master.arducopter_arm()
-            self.armed = True
-            return True
+            return self._wait_for_heartbeat_state(lambda: self.armed)
         except Exception as e:
             print(f"[vehicle] Arm hatası: {e}")
             return False
@@ -160,8 +190,7 @@ class Vehicle:
 
         try:
             self.master.arducopter_disarm()
-            self.armed = False
-            return True
+            return self._wait_for_heartbeat_state(lambda: not self.armed)
         except Exception as e:
             print(f"[vehicle] Disarm hatası: {e}")
             return False
@@ -187,6 +216,8 @@ class Vehicle:
                 "heading": self._cached_heading,
                 # monotonic — sistem saati kaymalarına immün.
                 "timestamp": self._last_voltage_time,
+                **({"heartbeat_timestamp": self._last_heartbeat_time}
+                   if self._target is not None else {}),
             }
         except Exception as e:
             print(f"[vehicle] Sensör okuma hatası: {e}")
@@ -199,19 +230,51 @@ class Vehicle:
         tüm mesaj türlerini tek geçişte yakalar hem buffer'ı boş tutar."""
         if self.master is None:
             return
-        now = time.monotonic()
-        # Sonsuz dönmesin diye üst sınır; pratikte burst nadir.
+        # Bound processing so a noisy MAVLink link cannot monopolize the loop.
         for _ in range(256):
             msg = self.master.recv_match(blocking=False)
             if msg is None:
                 break
-            mtype = msg.get_type()
-            if mtype == "SYS_STATUS":
-                self._cached_voltage = msg.voltage_battery / 1000.0
-                self._last_voltage_time = now
-            elif mtype == "VFR_HUD":
-                self._cached_heading = getattr(msg, "heading", None)
-                self._last_heading_time = now
+            self._handle_message(msg)
+
+    def _handle_message(self, msg):
+        # Source IDs are routing checks, not cryptographic authentication.
+        if self._target is None or (msg.get_srcSystem(), msg.get_srcComponent()) != self._target:
+            return
+        now = time.monotonic()
+        mtype = msg.get_type()
+        if mtype == "SYS_STATUS":
+            voltage_mv = msg.voltage_battery
+            # MAVLink UINT16_MAX means unknown; it must not look like 65.535 V.
+            if not isinstance(voltage_mv, (int, float)) or not math.isfinite(voltage_mv) or not 0 < voltage_mv < 65535:
+                self._cached_voltage = None
+                self._last_voltage_time = None
+                return
+            self._cached_voltage = voltage_mv / 1000.0
+            self._last_voltage_time = now
+        elif mtype == "VFR_HUD":
+            self._cached_heading = getattr(msg, "heading", None)
+            self._last_heading_time = now
+        elif mtype == "HEARTBEAT":
+            self._last_heartbeat_time = now
+            self._heartbeat_sequence += 1
+            self.armed = bool(msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
+            self._custom_mode = msg.custom_mode
+
+    def _wait_for_heartbeat_state(self, predicate):
+        """Confirm the observed state with a new heartbeat, within a fixed deadline.
+
+        A successful socket write or COMMAND_ACK alone does not prove that the
+        autopilot entered the requested mode/armed state.
+        """
+        sequence = self._heartbeat_sequence
+        deadline = time.monotonic() + self.heartbeat_timeout
+        while time.monotonic() < deadline:
+            self._drain_messages()
+            if self._heartbeat_sequence > sequence and predicate():
+                return True
+            time.sleep(0.01)
+        return False
 
     def send_rc(self, yaw=0, forward=0, vertical=0):
         """
@@ -255,7 +318,13 @@ class Vehicle:
         return self.send_rc(yaw=0, forward=0, vertical=0)
 
     def disconnect(self):
-        self.master = None
+        master, self.master = self.master, None
+        if master is not None:
+            try:
+                master.close()
+            except Exception as e:
+                print(f"[vehicle] Bağlantı kapatma hatası: {e}")
+                return False
         return True
 
     def _limit_pwm(self, value):
