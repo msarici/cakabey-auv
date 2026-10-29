@@ -24,7 +24,7 @@ from camera import Camera
 from pipe_detector import PipeDetector
 from pid_controller import PIDController
 from fsm import FSM
-from vehicle import Vehicle
+from vehicle_supervisor import SupervisedVehicle as Vehicle
 from safety import SafetyMonitor
 from distance import DistanceEstimator
 from debug_overlay import draw_overlay
@@ -308,6 +308,10 @@ def _run(args, cfg, resources):
         vertical_reverse=cfg_get(cfg, "vehicle", "vertical_reverse", default=False),
         allow_sim_fallback=False,  # Eski YAML True olsa bile gerçek mod fail-closed.
         simulation=args.sim,
+        supervisor_timeout=cfg_get(cfg, "safety", "watchdog_timeout", default=2.0),
+        expected_system=cfg_get(cfg, "vehicle", "expected_system", default=1),
+        expected_component=cfg_get(cfg, "vehicle", "expected_component", default=1),
+        require_signing=cfg_get(cfg, "vehicle", "require_signing", default=False),
     )
 
     resources["vehicle"] = vehicle
@@ -339,7 +343,8 @@ def _run(args, cfg, resources):
     resources["telemetry"] = telemetry
 
     ground = GroundStation(
-        host=cfg_get(cfg, "ground_station", "host", default="192.168.2.1"),
+        host="127.0.0.1" if args.sim else cfg_get(cfg, "ground_station", "host", default="192.168.2.1"),
+        allow_insecure=args.sim,
         port=cfg_get(cfg, "ground_station", "port", default=14651),
         enabled=cfg_get(cfg, "ground_station", "enabled", default=True),
         send_interval_s=cfg_get(cfg, "ground_station", "send_interval_s", default=0.1),
@@ -348,7 +353,8 @@ def _run(args, cfg, resources):
     resources["ground"] = ground
 
     video_sender = VideoSender(
-        host=cfg_get(cfg, "video", "host", default="192.168.2.1"),
+        host="127.0.0.1" if args.sim else cfg_get(cfg, "video", "host", default="192.168.2.1"),
+        allow_insecure=args.sim,
         port=cfg_get(cfg, "video", "port", default=14652),
         enabled=cfg_get(cfg, "video", "enabled", default=True),
         send_interval_s=cfg_get(cfg, "video", "send_interval_s", default=0.066),

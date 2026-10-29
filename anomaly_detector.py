@@ -51,9 +51,7 @@ class AnomalyDetector:
         break_min_contour_area=200,
         # break öncesi morfolojik close kernel'i: color-change delikleri
         # (rust/algae) bridgelensin ama gerçek pipe gap (>kernel) sağ kalsın.
-        # KISIT: kernel YATAY (w >> h) — boru ekran üzerinde yatay duruyor
-        # varsayımıyla. Pipe dikey/eğik konumlandırılırsa false negative üretir.
-        # Çözüm (gelecekte): contour PCA ile orientation ölç, kernel'i döndür.
+        # Kernel uzun ekseni ölçülen boru doğrultusuna döndürülür.
         break_close_kernel_w=49,
         break_close_kernel_h=9,
         # missing (eksik parça) - aspect ratio (sadece "çok kısa" tetikler)
@@ -96,15 +94,16 @@ class AnomalyDetector:
         if not detection or not detection.get("found", False):
             return []
 
-        bbox = detection.get("bbox", (0, 0, 0, 0))
+        bbox = detection.get("anomaly_bbox", detection.get("bbox", (0, 0, 0, 0)))
         x, y, w, h = bbox
         if w <= 0 or h <= 0:
             return []
 
-        full_mask = detection.get("mask")
+        full_mask = detection.get("anomaly_mask", detection.get("mask"))
         if full_mask is None:
             return []
 
+        # Inspection ROI can span aligned fragments; motor-control bbox stays separate.
         # ROI extract (frame ve mask aynı şekle sahip olmalı)
         fh, fw = frame.shape[:2]
         x2 = min(fw, x + w)
@@ -131,8 +130,16 @@ class AnomalyDetector:
         return anomalies
 
     @staticmethod
+    def _support_mask(roi_mask):
+        support = np.zeros_like(roi_mask)
+        points = cv2.findNonZero(roi_mask)
+        if points is not None:
+            cv2.fillConvexPoly(support, cv2.convexHull(points), 255)
+        return support
+
+    @staticmethod
     def _pipe_pixels(roi_mask):
-        return int(np.count_nonzero(roi_mask))
+        return int(np.count_nonzero(AnomalyDetector._support_mask(roi_mask)))
 
     @staticmethod
     def _largest_blob_bbox(binary_mask, offset_x, offset_y):
@@ -150,7 +157,7 @@ class AnomalyDetector:
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
         lower = np.array([self.algae_h_min, self.algae_s_min, self.algae_v_min], dtype=np.uint8)
         upper = np.array([self.algae_h_max, 255, 255], dtype=np.uint8)
-        algae_mask = cv2.inRange(hsv, lower, upper)
+        algae_mask = cv2.bitwise_and(cv2.inRange(hsv, lower, upper), self._support_mask(roi_mask))
         # ROI içinde yeşil (boru üstünde veya cevresinde)
         pipe_px = self._pipe_pixels(roi_mask)
         if pipe_px == 0:
@@ -172,7 +179,7 @@ class AnomalyDetector:
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
         lower = np.array([self.rust_h_min, self.rust_s_min, self.rust_v_min], dtype=np.uint8)
         upper = np.array([self.rust_h_max, self.rust_s_max, self.rust_v_max], dtype=np.uint8)
-        rust_mask = cv2.inRange(hsv, lower, upper)
+        rust_mask = cv2.bitwise_and(cv2.inRange(hsv, lower, upper), self._support_mask(roi_mask))
         # Pas pikselleri orange mask'in DIŞINDA görünür (turuncuyu örtmüş).
         # Bu yüzden roi_mask ile AND yapma; bbox zaten boru bölgesi.
         pipe_px = self._pipe_pixels(roi_mask)
@@ -194,15 +201,25 @@ class AnomalyDetector:
     def _detect_crack(self, roi, roi_mask, off_x, off_y):
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
         edges = cv2.Canny(gray, self.crack_canny_low, self.crack_canny_high)
+        # Color patches create boundaries too; do not label their rims as cracks.
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        algae = cv2.inRange(hsv, (self.algae_h_min, self.algae_s_min, self.algae_v_min),
+                             (self.algae_h_max, 255, 255))
+        rust = cv2.inRange(hsv, (self.rust_h_min, self.rust_s_min, self.rust_v_min),
+                            (self.rust_h_max, self.rust_s_max, self.rust_v_max))
+        color_edges = cv2.dilate(cv2.bitwise_or(algae, rust), np.ones((3, 3), np.uint8))
+        edges = cv2.bitwise_and(edges, cv2.bitwise_not(color_edges))
         # Boru sınırı kenarları (en üst/alt) tetiklemesin: bbox'ı içeri çek.
         # Çatlak orange mask'i koparttığı için mask-based erosion kullanılamaz
         # (çatlak pikselleri zaten mask'in dışına düşer); bbox tabanlı inner kullan.
-        h, w = roi_mask.shape
-        margin_y = max(2, h // 8)
-        margin_x = max(2, w // 25)
-        inner = np.zeros_like(roi_mask)
-        if h > 2 * margin_y and w > 2 * margin_x:
-            inner[margin_y:h - margin_y, margin_x:w - margin_x] = 255
+        support = self._support_mask(roi_mask)
+        points = cv2.findNonZero(support)
+        if points is None:
+            return []
+        thickness = min(cv2.minAreaRect(points)[1])
+        margin = max(2, int(thickness // 8))
+        inner = cv2.erode(support, np.ones((2 * margin + 1, 2 * margin + 1), np.uint8),
+                          borderType=cv2.BORDER_CONSTANT, borderValue=0)
         edges = cv2.bitwise_and(edges, inner)
 
         lines = cv2.HoughLinesP(
@@ -242,16 +259,25 @@ class AnomalyDetector:
         Kopma: ROI-mask içinde 2+ büyük contour varsa (gap görünüyor).
         Eksik: tek contour ama aspect ratio beklenenden düşükse.
 
-        ÖNEMLİ: full mask değil, sadece detection bbox'ına kırpılmış mask
+        ÖNEMLİ: full mask değil, seçilen inspection bbox'ına kırpılmış mask
         kullanılır. Boru dışında kalan turuncu distractor'lar break tetiklemez.
 
         Color-change anomalileri (rust/algae) boru üzerinde mask'i koparır
-        ama bu bir "kopma" değildir. Önce horizontal-biased MORPH_CLOSE ile
+        ama bu bir "kopma" değildir. Önce boru doğrultusunda MORPH_CLOSE ile
         bu küçük delikler bridge edilir; gerçek pipe break (kernel'den geniş
         gap) sağ kalır.
         """
-        kernel = np.ones((self.break_close_kernel_h, self.break_close_kernel_w),
-                         np.uint8)
+        points = cv2.findNonZero(roi_mask)
+        if points is None:
+            return []
+        rect = cv2.minAreaRect(points)
+        long_side, short_side = max(rect[1]), min(rect[1])
+        angle = rect[2] + (90 if rect[1][1] > rect[1][0] else 0)
+        size = max(self.break_close_kernel_w, self.break_close_kernel_h) | 1
+        kernel = np.zeros((size, size), np.uint8)
+        cv2.ellipse(kernel, (size // 2, size // 2),
+                    (self.break_close_kernel_w // 2, self.break_close_kernel_h // 2),
+                    angle, 0, 360, 1, -1)
         closed = cv2.morphologyEx(roi_mask, cv2.MORPH_CLOSE, kernel)
         contours, _ = cv2.findContours(
             closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
@@ -285,8 +311,8 @@ class AnomalyDetector:
         # Eksik parça: tek parça ama aspect ratio çok düşük (boru kesilmiş)
         # NOT: long pipe (aspect büyük) normal — sadece "çok kısa" tetiklensin.
         rh, rw = roi_mask.shape
-        if rh > 0:
-            aspect = rw / float(rh)
+        if short_side > 0:
+            aspect = long_side / short_side
             if aspect < self.missing_aspect_min:
                 out.append({
                     "type": self.MISSING,

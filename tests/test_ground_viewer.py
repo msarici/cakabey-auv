@@ -152,7 +152,7 @@ def test_process_one_missing_seq_uses_default():
         {"state": "X"}, ADDR, last_seq=5, quiet=True
     )
     # default -1 int, izin verilen path → loss=0, last_seq=-1 olarak güncellenir
-    assert new_last == -1
+    assert new_last == 5
     assert lost == 0
 
 

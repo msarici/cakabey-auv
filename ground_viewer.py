@@ -15,6 +15,9 @@ import json
 import socket
 import sys
 import time
+import math
+
+from telemetry_auth import DatagramAuthenticator
 
 
 def main():
@@ -23,7 +26,11 @@ def main():
     parser.add_argument("--port", type=int, default=14651, help="UDP port")
     parser.add_argument("--quiet", action="store_true",
                         help="Sadece ozet bas, paket detayini gosterme")
+    parser.add_argument("--sim", action="store_true", help="Kimliksiz yerel loopback testi")
     args = parser.parse_args()
+    if args.sim:
+        args.bind = "127.0.0.1"
+    auth = DatagramAuthenticator("telemetry", allow_insecure=args.sim)
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -48,7 +55,7 @@ def main():
                 continue
 
             try:
-                pkt = json.loads(data.decode("utf-8"))
+                pkt = decode_packet(data, auth)
             except Exception as e:
                 print(f"[ground_viewer] Parse hatasi: {e}")
                 continue
@@ -73,6 +80,34 @@ def main():
         sock.close()
 
 
+def decode_packet(data, auth):
+    """Verify integrity/freshness before parsing and displaying telemetry."""
+    def unique(pairs):
+        obj = {}
+        for key, value in pairs:
+            if key in obj:
+                raise ValueError("Duplicate JSON field")
+            obj[key] = value
+        return obj
+    def reject_constant(value):
+        raise ValueError("Non-finite JSON value")
+    def finite_float(value):
+        result = float(value)
+        if not math.isfinite(result):
+            raise ValueError("Non-finite JSON value")
+        return result
+    pkt = json.loads(auth.decode(data).decode('utf-8'), object_pairs_hook=unique,
+                     parse_constant=reject_constant, parse_float=finite_float)
+    if not isinstance(pkt, dict) or type(pkt.get('seq')) is not int or not 0 <= pkt['seq'] < 2**63:
+        raise ValueError("Invalid telemetry sequence")
+    if type(pkt.get('ts')) not in (int, float) or not math.isfinite(pkt['ts']):
+        raise ValueError("Invalid telemetry time")
+    for field in ('sensor', 'detection', 'control'):
+        if field in pkt and pkt[field] is not None and not isinstance(pkt[field], dict):
+            raise ValueError("Invalid telemetry structure")
+    return pkt
+
+
 def _process_one(pkt, addr, last_seq, quiet=False):
     """
     Tek paket için loss analizi + print. Loop'tan ayrı tutuldu ki testlenebilsin.
@@ -90,7 +125,7 @@ def _process_one(pkt, addr, last_seq, quiet=False):
     # 2) seq int değilse (string, None, float, bool) loss tespiti yapma.
     #    bool int subclass'ı olduğu için açık ele al.
     seq = pkt.get("seq", -1)
-    if isinstance(seq, bool) or not isinstance(seq, int):
+    if type(seq) is not int or seq < 0 or seq <= last_seq:
         if not quiet:
             _print_packet(pkt, addr)
         return last_seq, 0

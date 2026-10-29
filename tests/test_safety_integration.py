@@ -72,6 +72,7 @@ def test_legacy_yaml_true_does_not_allow_hardware_fallback(monkeypatch, gpio):
     # Capture actual constructor flags while using real Vehicle behavior.
     real_vehicle = vehicle.Vehicle
     def factory(**kwargs):
+        kwargs.pop("supervisor_timeout")  # Factory isolates transport in this test.
         v = real_vehicle(**kwargs)
         monkeypatch.setattr(v, 'connect', lambda: False)
         assert v.allow_sim_fallback is False

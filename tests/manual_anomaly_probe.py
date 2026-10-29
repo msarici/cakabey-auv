@@ -35,6 +35,7 @@ def main():
         anomalies = detector.detect(frame, detection)
         print(json.dumps({'label': label, 'expected_bbox': bbox,
                           'detected_bbox': detection['bbox'],
+                          'inspection_bbox': detection.get('anomaly_bbox', detection['bbox']),
                           'anomalies': [a['type'] for a in anomalies]}))
     score = HSVEvaluator(seed=42).evaluate(cfg['detector'])
     print(json.dumps({'configured_hsv_synthetic_iou': score}))

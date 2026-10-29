@@ -1,68 +1,57 @@
-# Çakabey AUV — kod ve güvenlik değerlendirmesi
+# Çakabey AUV — tamamlanan yazılım incelemesi
 
-Tarih: 29 Ekim 2026. İncelenen kaynak: `84f499b6825d0d6a9ce0f63a521b534fc8486829` (main, 10 Temmuz 2026). Bulguların yeni oluştuğu iddia edilmez. Bu rapor kaynak kod incelemesi, sahte donanımla hata enjeksiyonu, yerel UDP testleri ve sentetik görüntü ölçümüdür; fiziksel aracın güvenlik sertifikasyonu değildir.
+29 Ekim 2026. Başlangıç kaynağı: `84f499b6825d0d6a9ce0f63a521b534fc8486829` (10 Temmuz 2026). Bulguların yeni oluştuğu iddia edilmez. Önceki incelemedeki açık yazılım başlıkları bu sürümde ele alındı; fiziksel doğrulama yapılmadı.
 
-## Sonuç
+## Düzeltilenler
 
-İlk iki bulgu doğrudur; komut kanalı ve görev yaşam döngüsünde başka önemli eksikler de doğrulanmıştır. Bu değişiklik güvenli hata davranışını ve test kapsamını iyileştirir. Fiziksel motor durdurma, bağımsız watchdog ve gerçek sualtı görüntülerindeki algılama doğruluğu henüz doğrulanmadığı için araç için "tam güvenli / sahaya hazır" sonucu çıkarılamaz.
+| Alan | Son davranış |
+|---|---|
+| Gerçek bağlantı / simülasyon | YAML gerçek bağlantı arızasını simülasyonla gizleyemez. `--sim` Pixhawk/GPIO açmadan çalışır. Eski test adresi yerine seri port varsayılanı kullanılır. |
+| GPIO / sızıntı | Başlatma, okuma ve geçersiz seviye hataları kilitli acil durumdur; arm engellenir veya görev durdurulur. |
+| Komut güvenliği | HMAC-SHA256, imzalı hello/challenge, süreli alıcı nonce'u, oturum kilidi, artan sıra sayısı ve katı JSON şeması. Anahtarsız gerçek komut kanalı başlamaz. |
+| Acil dur / bağlantı kaybı | Acil dur gönderici ve alıcıda kilitlidir; hız sınırına takılmaz, kamera öncesi/çıkış öncesi kontrol edilir. Manuel bağlantı kaybı kendiliğinden otonom harekete dönmez. |
+| Bağımsız yazılım durdurması | `vehicle_supervisor.py` gerçek MAVLink bağlantısını ayrı süreçte tutar. Ana program kamera/CV/log içinde takılırsa veya aniden ölürse süre dolunca nötr/disarm/kapatma istenir. Süresi dolan süreç geç gelen komutla devam etmez. Zaten arm durumundaki araca yeniden bağlanma da izlenir. |
+| Pixhawk durum doğrulaması | Arm/disarm/mod başarıları yeni heartbeat ile doğrulanır. Bilinmeyen/geçersiz batarya reddedilir, heartbeat yaşı ayrıca kontrol edilir, reconnect cache'i temizler. |
+| MAVLink güvenliği | İlk otopilot kimliği yapılandırılmış system/component ID ile eşleşir. Ağ bağlantıları MAVLink2 imzası ister; yerel seri bağlantıda ayrıca zorunlu tutulabilir. İmzasız/yanlış anahtarlı/tekrarlı paketler gerçek codec testlerinde reddedilir. pymavlink 2.4.50'nin başarısız imzada değiştirdiği replay state geri alınır; sürüm sabitlenmiştir. |
+| Video / telemetri | Kanal ayrımlı HMAC anahtarları, imzalı oturum/sıra/zaman, çözümleme öncesi doğrulama. Bellek/paket/kare/JPEG/decode sınırları ve video yeniden sıralama penceresi vardır. Kısmi gönderim hatası sonrası kare parçalarının sonraki kareyle karışması engellenir. |
+| Başlangıç / kapanış | Kaynakların yaşam döngüsü başlangıcı da kapsar. Stop/disarm/kapatma ayrı ayrı denenir; tek hata diğerini engellemez. Eksik/bozuk config, geçersiz zaman ve sonlu olmayan sayılar reddedilir. |
+| Kamera / kontrol | CSI gerçek Argus/GStreamer hattını ve seçilen cihazı kullanır. İlk kayıp kare nötr komut ister; detector/FSM istisnasında göreve devam edilmez. Motor çıkışından önce yaş/GPIO/acil dur yeniden kontrol edilir. |
+| Anomali algılama | Kontrol hedefinden ayrı inceleme ROI'si hizalı yakın boru parçalarını kapsar. Dönüşe dayanıklı geometri, boru dışı arka planın dışlanması ve renk lekesi sınırlarının çatlak sayılmaması eklendi. Config eşikleri gerçek boru-dedektör/analiz zinciriyle sınandı. |
+| Diğer | Telemetri kayıp sayacı eski paketle geri sarılmaz. ABC optimizer geçersiz koloni boyutunu ve boş arama alanını erken reddeder. HSV sınırları/alan/kernel değerleri doğrulanır. |
 
-Öncelikler: **P1** doğrudan yetkisiz hareket, durdurmanın atlanması veya donanım durumunun yanlış kabulü; **P2** doğruluk, kullanılabilirlik veya savunma derinliği; **P3** çevrimdışı araç/izleme sorunları. Bunlar bağlama göre mühendislik öncelikleridir; CVSS puanı değildir.
+## Gerçek doğrulama sonuçları
 
-## Doğrulanan ve düzeltilen bulgular
+- İlk kaynak: **125 test geçti**.
+- İlk geniş düzeltme: **246 test**, GitHub Actions Python 3.10/3.11/3.12 üzerinde geçti.
+- Son sürüm yerel tam test çalışması: **444 geçti, 0 atlandı**, 10.16 saniye; Python 3.12.14.
+- Ayrı süreç testleri: ana programın hareketsiz kalması, kanalın kapanması, `os._exit` ile aniden ölmesi, önceden arm durumundaki bağlantı, düzenli komut ve temiz kapanış. Gerçek motor kullanılmadı.
+- Gerçek CLI `--sim` ile ayrı süreçte açıldı, görüntü işleme başladı ve SIGINT ile hatasız kapandı.
+- Anomali zinciri: 5 rastgelelik tohumu × 4 dönüş açısı × 6 sınıf = **120 durumda tam beklenen etiketler**; temiz örneklere yanlış alarm yok. Ayrıca dikkat dağıtıcı nesneler, parçalı ROI, borusuz görüntü ve ayrı HSV gürültü tohumları test edildi.
+- Önceki probe beş pozitif anomaliyi kaçırıyordu; son probe algae/rust/crack/break/missing sınıflarının beşini de buluyor ve clean örneğinde boş sonuç veriyor.
+- Mevcut sentetik HSV IoU: **0.9414922865** (önceki config: **0.7099763637**), seed 42. Bu saha doğruluk oranı değildir.
+- `git diff --check` ve Python derleme kontrolü başarılı.
 
-| Öncelik | Kaynak / önceki davranış | Bu yamadaki sonuç |
-|---|---|---|
-| P1 | `config.yaml`, `main.py`, `vehicle.py`: gerçek bağlantı kurulamayınca YAML üzerinden simülasyona düşülebiliyordu. | Gerçek mod fallback kapalı; `--sim` doğrudan yazılım simülasyonu, Pixhawk/GPIO açılmaz. Varsayılan seri port `/dev/ttyACM0`; eski `tcp:127.0.0.1:1` test adresi kaldırıldı. |
-| P1 | `safety.py`: GPIO başlatma/okuma hatası sızıntı yok gibi ele alınıyordu. | Arıza kilitli acil durum; başlatmada arm engellenir. Gerçek uygulamada sensörün açıkça devre dışı bırakılması da reddedilir. |
-| P1 | `command_link.py`: ağ erişimi olan herhangi bir gönderen manuel hareket/mod komutu verebiliyordu. | HMAC-SHA256, ortak gizli anahtar, imzalı hello/challenge ve alıcı nonce'u. Anahtar yoksa etkin gerçek komut kanalı başlatılmaz. |
-| P1 | `command_link.py`: eski/tekrarlanan/sırası bozuk komutlar son komutu ezip bağlantıyı canlı tutabiliyordu. | Oturum kilidi, artan sıra sayısı ve süreli nonce; alıcı yeniden başladığında eski nonce geçersiz. Hiç alınmamış yeni sıra sayılı geçerli paket, iki saniyelik nonce süresi içinde gecikmeli kabul edilebilir. |
-| P1 | `command_link.py`: sınırsız UDP boşaltma güvenlik döngüsünü meşgul edebiliyordu; gevşek JSON şeması geçersiz alanları kabul ediyordu. | Poll başına 64 paket ve 2048 byte sınırı; yinelenen JSON alanları, yanlış türler, geçersiz eksenler ve kimliksiz paketler reddedilir. |
-| P1 | `command_link.py`, `main.py`: acil dur hız sınırlamasına takılabilir, sonraki paketle ezilebilir veya kamera yolunda gecikebilirdi. | Gönderici/alıcıda kalıcı acil dur; TX hız sınırı atlanır; ana döngü kamera öncesi ve motor çıkışı öncesi kontrol eder, görevi bitirir ve stop/disarm ister. |
-| P1 | `main.py`: manuel komut bağlantısı eskidiğinde otomatik SEARCH hareketine dönülüyordu. | Manuel bağlantı kaybı görevi bitirir; kendiliğinden otonom hareket başlamaz. Açıkça seçilmiş otonom görevin davranışı korunur. |
-| P1 | `vehicle.py`: mod/arm/disarm gönderimi hemen başarılı sayılıyordu. | Bağlı otopilottan yeni heartbeat ile hedef durumun görülmesi gerekir; zaman aşımı başarısızlık sayılır. Arm onayı yokluğu "kesin arm olmadı" sayılmaz; kapanışta disarm yine denenir. |
-| P1 | `vehicle.py`, `safety.py`: başka MAVLink kaynakları telemetriyi yenileyebilir; bilinmeyen batarya `65535` sağlıklı `65.535V` olabilirdi. | Bağlı otopilot system/component eşleşmesi, geçersiz batarya verisinin reddi, ayrı heartbeat yaş kontrolü ve reconnect öncesi cache sıfırlama. Kimlik eşleşmesi kriptografik MAVLink doğrulaması değildir. |
-| P1 | `main.py`: kısmi başlangıç hatası/tek cleanup istisnası durdurma ve diğer kapatmaları atlatabilirdi. | Kaynak yaşam döngüsü bütün başlangıcı kapsar; stop, disarm, bağlantı/GPIO/kamera/ağ/log kapatma bağımsız denenir. |
-| P1 | `main.py`: görüntü kaybında önceki hareket sürebilir; tespit/FSM istisnası arama dönüşüne yol açabilirdi. | İlk kayıp karede nötr komut istenir; işlem istisnasında görev durur; işleme sonrası eski güvenlik verisi motor komutuna izin vermez. |
-| P2 | `main.py`: okunamayan config varsayılanlarla devam ediyor; NaN/sonsuz değerler zaman sınırlarını bozabiliyordu. | Eksik/bozuk config başlangıcı durdurur; sonlu değerler, pozitif zaman ve kayıp sınırları doğrulanır; gerçek modda test kamera fallback kapalıdır. |
-| P2 | `camera.py`: CSI seçimi GStreamer hattını kullanmıyor, cihaz 0'ı açıyordu. | Argus/GStreamer hattı, seçilen sensor-id ve FPS kullanılır; başarısız capture serbest bırakılır. Donanımda denenmedi. |
-| P2 | `video_viewer.py`: sınırsız UDP/reassembly ve kontrolsüz chunk başlıkları kaynak tüketimini artırıyordu. | Paket/decode, frame, chunk ve JPEG boyut sınırları; beklenen kaynak IP filtresi, sıra/tekrar/rollover denetimi. Video hâlâ kriptografik doğrulanmaz. |
-| P3 | `abc_optimizer.py`: colony_size=1 komşu seçiminde sonsuz döngü oluşturuyordu. | Geçersiz koloni boyutu ve boş arama alanı erken reddedilir. |
-
-## Açık kalanlar — sonraki çalışma
-
-1. **P1, bağımsız durdurma doğrulaması:** `camera.read()`, görüntü işleme veya dosya yazımı aynı thread'i durdurursa Python watchdog'u da çalışamaz. Çıkış öncesi tekrar kontrol yalnızca fonksiyon geri döndüğünde fayda sağlar. ArduSub iletişim/RC kaybı failsafe ayarları, GCS heartbeat politikası ve bağımsız watchdog fiziksel donanımda ölçülmelidir. Bu yama bunları yapılandırmaz. Kopmuş bağlantıda stop/disarm paketinin ulaşacağı garanti edilemez.
-2. **P2, anomali uçtan uca doğruluğu:** gerçek `PipeDetector(config) -> AnomalyDetector(config)` akışı kendi sentetik veri kümesinde algae, rust, crack, break ve missing örneklerinin beşinde de boş sonuç verdi. Mevcut birim testleri gerçek dedektör yerine doğru kabul edilen bbox kullanıyor. Özellikle `pipe_detector.py` en büyük konturu seçiyor; `anomaly_detector.py` bu ROI'ye kırptığı için kırık borunun diğer parçası dışarıda kalıyor. Gerçek etiketli sualtı görüntüleriyle ROI/tespit tasarımını yeniden değerlendirmek gerekir; bu yamada eşikler tahminle değiştirilmedi.
-3. **P2, kalibrasyon iddiaları:** mevcut HSV config ile sentetik IoU **0.7099763637**, yorumdaki eski **1.0000** sonucu yeniden elde edilemedi. Ortam OpenCV 5.0.0/NumPy 2.3.5, seed 42. Eski bağımlılık sürümlerinin etkisi test edilmedi; saha başarısı veya tarihsel performans kaybı diye yorumlanamaz. Config yorumu bu ölçümle düzeltildi.
-4. **P2, kalan ağ güven sınırı:** telemetri/video şifreli veya kriptografik doğrulanmış değildir. MAVLink kaynak ID filtresi imza değildir; ilk otopilot kimliği keşfedilir. HMAC komutları da şifrelemez. Tether ağına erişen taraf için bu sınırlar sürer. Anahtar güvenli ve repo dışında saklanmalıdır.
-5. **P2, kuruluma bağlı sınırlar:** ArduSub firmware, RC kanal yönleri/PWM, GPIO kablolaması ve sensörün açık/kısa devre davranışı fiziksel test ister. Dijital GPIO'nun sabit kuru seviyesinde takılması yazılımla kesin teşhis edilemez.
-6. **P3, telemetri gözlemlenebilirliği:** ground viewer sıra takibi sırası bozulan paketlerde kayıp sayısını yüksek hesaplayabilir; motor kontrol etkisi gösterilmedi.
-7. **P2, tekrarlanabilir bağımlılıklar:** requirements yalnızca alt sürüm sınırları içeriyor; tek Python/bağımlılık ortamındaki sonuçlar diğer sürümlere genellenemez. Bu incelemede haricî CVE veritabanı taraması yapılmadı.
-
-## Gerçek test sonuçları
-
-Yerel ortam: Python 3.12.14, pytest 9.2.0, OpenCV paket 5.0.0.93 (cv2 5.0.0), NumPy 2.3.5, PyYAML 6.0.3, pymavlink 2.4.50, pygame 2.6.1.
-
-- Özgün SHA: **125 geçti**, 0 atlandı; 2.92 saniye.
-- Entegre yama: **246 geçti**, 0 atlandı; 3.10 saniye.
-- `git diff --check`: başarılı.
-- Tanısal anomali probe'u: beş pozitif örnek kaçırıldı; clean örneği boş sonuç verdi. Bu sonuç pytest sayısına katılmadı ve başarı sayılmadı.
-- Önceki dar yamada pygame yoktu ve 1 modül atlanmıştı. Burada pygame kuruldu, manuel giriş testleri de çalıştı.
-- Python 3.10/3.11, gerçek Jetson/Pixhawk, SITL, fiziksel joystick, su testi ve ağ üzerinde canlı saldırı testi yapılmadı. CI matrisi ayrı sonuç üretir; yerel testler CI geçti anlamına gelmez.
-
-Tekrar çalıştırma (depo kökünde):
+Yerel bağımlılıklar: pytest 9.2.0, OpenCV paket 5.0.0.93 (cv2 5.0.0), NumPy 2.3.5, PyYAML 6.0.3, pymavlink 2.4.50, pygame 2.6.1. Son commit'in Python 3.10/3.11/3.12 sonuçları GitHub Actions/PR kontrollerinden izlenir; önceki commit sonuçları yeni commit için kanıt sayılmaz.
 
 ```bash
 pip install -r requirements.txt pygame
 python -m pytest tests/ -q -rs
 python tests/manual_anomaly_probe.py --config config.yaml
-git diff --check
+python main.py --sim --no-display
 ```
 
-Kapsam: mevcut Python modülleri, YAML, tests, CI ve README; kontrol/başlatma/kapanış, GPIO/MAVLink, komut/telemetri/video, kamera/görüntü/FSM/PID, manuel giriş, kayıt, mesafe, optimizasyon ve değerlendirme araçları incelendi. Öncelikli arıza yolları için test eklendi; bütün olası durumların veya fiziksel sistemin eksiksiz kanıtı değildir.
+## Kurulum sözleşmesi
 
-## Kurulumdaki davranış değişiklikleri
+- `CAKABEY_COMMAND_KEY`: iki uçta aynı rastgele gizli değer, en az 32 byte; komut, video ve telemetri doğrulaması için. Anahtar repoya yazılmaz. Anahtarsız tamamen otonom kullanımda üç ağ kanalını da config'de kapatın.
+- `CAKABEY_MAVLINK_KEY`: 64 hex karakter/32 byte; ağ üzerinden Pixhawk için zorunlu. Otopilotun uyumlu MAVLink2 ayarı ve aynı anahtar ayrıca sağlanır. Yerel seri port fiziksel güven varsayımıyla çalışabilir; `vehicle.require_signing: true` bu portta da imza ister. Varsayılan kimlikler system=1/component=1.
+- `--sim`: donanım açmaz, imzasız test trafiği sadece loopback'tedir. Video viewer `--sim --rov-ip 127.0.0.1`, telemetri viewer `--sim` kullanır.
+- Acil dur ve komut oturum kilidi yeniden başlatmayla temizlenir. Gönderici yeniden başlarsa ilgili alıcı/viewer da yeniden başlatılmalıdır.
+- Komut kanalı nonce protokolü ortak duvar saati gerektirmez. Tek yönlü video/telemetri imzalı zaman damgası kullanır: makinelerin saatleri eşitlenmeli; 2 saniye eski / 0.5 saniye gelecek sınırı vardır.
 
-- Gerçek mod: `CAKABEY_COMMAND_KEY` en az 32 byte; iki uçta aynı rastgele gizli değer. Kaynak kodda anahtar yoktur. Tam otonom ve komutsuz kullanım için `command.enabled: false` açıkça seçilir.
-- `--sim`: gerçek Pixhawk/GPIO kullanılmaz, komut alıcısı loopback'te çalışır. Viewer: `--sim --rov-ip 127.0.0.1`. Video hedefini de yerel simulation config'de loopback yapın.
-- Acil dur veya sender yeniden başlatılması sonrası iki ucu yeniden başlatın. Oturum kilidi ve acil dur kilidi otomatik temizlenmez.
-- Gerçek modda `source: test`, kamera fallback ve `leak_pin: null` kabul edilmez. `--sim` gerçek SITL bağlantısı kurmaz.
+## Donanım olmadan kanıtlanamayacak ve tasarıma ait sınırlar
+
+1. Bağımsız süreç ana kontrol programının takılmasına karşı çalışır. İşletim sistemi/güç kaybı, MAVLink sürücüsünün kendi içinde kilitlenmesi veya kopmuş kablo durumunda fiziksel duruş garantisi vermez. Otopilot failsafe ayarları ve gerçek motor tepkisi bu incelemede değiştirilmedi veya ölçülmedi.
+2. İmzalar kimlik/bütünlük sağlar; şifreleme sağlamaz. Komutlarda daha önce alınmamış geçerli yüksek sıra sayılı paket nonce'un iki saniyelik ömründe gecikmeli kabul edilebilir. Video/telemetride viewer yeniden başladıktan sonra aynı kısa tazelik penceresindeki görülmemiş yakalanmış paketler kabul edilebilir. Bu sınırlar sınırsız replay koruması diye sunulmaz.
+3. Anomali tespiti sonlu, sezgisel görüntü kurallarıdır; yakın ve aynı eksendeki parçaları gruplar. Gerçek su, aydınlatma, ölçek ve aynı eksendeki ilgisiz nesneler için temsilî kayıtlarla doğrulama gerekir. Sentetik başarı fiziksel kalibrasyon değildir.
+4. GPIO'nun kuru seviyesinde takılması, kablo/sensör devresinin elektriksel arızaları, motor yönleri, PWM/RC eşlemesi ve fiziksel joystick bu ortamda sınanmadı. Gerçek Jetson/Pixhawk/SITL çalıştırılmadı.
+5. Bu çalışma mevcut kaynak kodun arıza yollarını ve test kapsamını ele alır; tüm gelecekteki bağımlılık sürümleri, dış CVE veritabanları veya olası her saldırı/donanım koşulu için eksiksizlik iddiası yoktur.

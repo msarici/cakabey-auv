@@ -15,17 +15,20 @@ import json
 import socket
 import time
 
+from telemetry_auth import DatagramAuthenticator, loopback_address
+
 
 class GroundStation:
     def __init__(self, host="192.168.2.1", port=14651, enabled=True,
-                 send_interval_s=0.1):
+                 send_interval_s=0.1, auth_key=None, allow_insecure=False):
         """
         host: kara istasyonu IP (ROV tether default genelde 192.168.2.1)
         port: UDP destination port
         enabled: False ise hiç socket açmaz, send() no-op
         send_interval_s: ardışık iki paket arası minimum süre (rate limit)
         """
-        self.host = host
+        self.host = loopback_address(host) if allow_insecure and enabled else host
+        self._auth = DatagramAuthenticator("telemetry", auth_key, allow_insecure, enabled)
         self.port = int(port)
         self.enabled = bool(enabled)
         self.send_interval_s = float(send_interval_s)
@@ -42,20 +45,18 @@ class GroundStation:
     def _open_socket(self):
         try:
             self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            # UDP send bloklamaz pratikte (kernel ya queue eder ya drop).
-            # Yine de garanti olsun: kısa timeout, "fire and forget".
-            self._sock.settimeout(0.05)
+            # Safety loop must never wait for a congested network.
+            self._sock.setblocking(False)
         except Exception as e:
             print(f"[ground] Socket acilamadi: {e}")
             self._sock = None
             self.enabled = False
 
     def _build_packet(self, payload):
-        packet = {
-            "seq": self._seq,
-            "ts": time.time(),
-        }
-        packet.update(payload)
+        if not isinstance(payload, dict):
+            raise ValueError("Telemetry payload must be a dictionary")
+        packet = dict(payload)
+        packet.update(seq=self._seq, ts=time.time())
         return packet
 
     def send(self, payload):
@@ -75,11 +76,14 @@ class GroundStation:
 
         try:
             packet = self._build_packet(payload)
-            data = json.dumps(packet, default=str).encode("utf-8")
+            data = self._auth.encode(json.dumps(packet, allow_nan=False).encode("utf-8"))
             self._sock.sendto(data, (self.host, self.port))
             self._seq += 1
             self._last_send_t = now
             return True
+        except (ValueError, TypeError, OverflowError, RecursionError):
+            self._send_errors += 1
+            return False
         except (BlockingIOError, InterruptedError, socket.timeout):
             # UDP send buffer dolu — nadir; sadece sayaca yaz
             self._send_errors += 1

@@ -35,6 +35,7 @@ except ImportError:
 
 from manual_input import ManualInput
 from command_link import CommandSender
+from telemetry_auth import DatagramAuthenticator, loopback_address
 
 HEADER = struct.Struct(">IHH")
 HEADER_SIZE = HEADER.size
@@ -86,7 +87,12 @@ def _jpeg_dimensions_allowed(blob):
 
 
 class FrameReceiver:
-    def __init__(self, bind="0.0.0.0", port=14652, source_host=None):
+    def __init__(self, bind="0.0.0.0", port=14652, source_host=None,
+                 auth_key=None, allow_insecure=False):
+        if allow_insecure:
+            bind = loopback_address(bind)
+        self._auth = DatagramAuthenticator("video", auth_key, allow_insecure, reorder_window=256)
+        self._auth_errors = 0
         self.bind = bind
         self.port = int(port)
         self.source_host = socket.gethostbyname(source_host) if source_host is not None else None
@@ -129,6 +135,11 @@ class FrameReceiver:
             except (BlockingIOError, OSError):
                 break
             if self.source_host is not None and addr[0] != self.source_host:
+                continue
+            try:
+                data = self._auth.decode(data)
+            except ValueError:
+                self._auth_errors += 1
                 continue
             if len(data) <= HEADER_SIZE or len(data) > HEADER_SIZE + MAX_CHUNK_BYTES:
                 continue
@@ -186,6 +197,7 @@ class FrameReceiver:
 
     def stats(self):
         return {
+            "auth_errors": self._auth_errors,
             "frames_received": self._frames_received,
             "frames_decoded": self._frames_decoded,
             "frames_dropped": self._frames_dropped,
@@ -268,7 +280,8 @@ def main():
         host=args.rov_ip, port=args.cmd_port, allow_insecure=args.sim, send_interval_s=0.02
     )
 
-    rx = FrameReceiver(bind=args.bind, port=args.video_port, source_host=args.rov_ip)
+    rx = FrameReceiver(bind="127.0.0.1" if args.sim else args.bind,
+                       port=args.video_port, source_host=args.rov_ip, allow_insecure=args.sim)
 
     print(f"[viewer] Video dinleniyor {args.bind}:{args.video_port}")
     if sender:

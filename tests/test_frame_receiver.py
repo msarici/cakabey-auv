@@ -10,7 +10,7 @@ import video_viewer as viewer
 def receiver(monkeypatch):
     sock = Mock()
     monkeypatch.setattr(viewer.socket, 'socket', Mock(return_value=sock))
-    rx = viewer.FrameReceiver(source_host='192.168.2.2')
+    rx = viewer.FrameReceiver(bind='127.0.0.1', source_host='192.168.2.2', allow_insecure=True)
     return rx
 
 

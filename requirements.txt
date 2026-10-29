@@ -9,7 +9,8 @@ numpy>=1.24.0
 PyYAML>=6.0
 
 # Pixhawk / MAVLink (gerçek araç bağlantısı için)
-pymavlink>=2.4.40
+# Signature-verifier state guard is tested against this version.
+pymavlink==2.4.50
 
 # Test (opsiyonel)
 pytest>=7.4.0
